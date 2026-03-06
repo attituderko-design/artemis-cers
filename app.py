@@ -63,6 +63,24 @@ def get_current_notion_url(item) -> str | None:
         return cover.get("external", {}).get("url")
     return None
 
+def is_incomplete(page) -> bool:
+    """カバー・TMDB_ID・メタデータのどれか一つでも未設定ならTrue"""
+    props = page["properties"]
+    # カバー
+    if not page.get("cover"):
+        return True
+    # TMDB_ID
+    if not props.get("TMDB_ID", {}).get("number"):
+        return True
+    # メタデータ（ジャンル・出演者・監督のどれか）
+    if not props.get("ジャンル", {}).get("multi_select"):
+        return True
+    if not props.get("出演者・主催", {}).get("rich_text"):
+        return True
+    if not props.get("監督・指揮者", {}).get("rich_text"):
+        return True
+    return False
+
 # ============================================================
 # Drive ファイル操作
 # ============================================================
@@ -411,7 +429,10 @@ if not st.session_state.pages_loaded:
 target_pages = st.session_state.pages
 
 def get_display_pages():
-    base = [p for p in target_pages if not p.get("cover")] if sync_scope == "未設定のみ更新" else target_pages
+    if sync_scope == "未設定のみ更新":
+        base = [p for p in target_pages if is_incomplete(p)]
+    else:
+        base = target_pages
     return apply_diff_filter(base, diff_filter)
 
 def resolve_needs(notion_ok_now, drive_ok_now):
