@@ -202,8 +202,8 @@ def filter_target_pages(all_pages: list) -> list:
 
 def get_tmdb_id_from_notion(props) -> tuple:
     tmdb_id_val = props.get("TMDB_ID", {}).get("number")
-    media_type_val = props.get("MEDIA_TYPE", {}).get("select", {})
-    media_type = media_type_val.get("name") if media_type_val else None
+    media_type_val = props.get("MEDIA_TYPE", {}).get("multi_select", [])
+    media_type = media_type_val[0]["name"] if media_type_val else None
     return (int(tmdb_id_val) if tmdb_id_val else None), media_type
 
 def save_tmdb_id_to_notion(page_id: str, tmdb_id: int, media_type: str) -> bool:
@@ -213,10 +213,13 @@ def save_tmdb_id_to_notion(page_id: str, tmdb_id: int, media_type: str) -> bool:
         headers=NOTION_HEADERS,
         json={"properties": {
             "TMDB_ID":    {"number": tmdb_id},
-            "MEDIA_TYPE": {"select": {"name": media_type}},
+            "MEDIA_TYPE": {"multi_select": [{"name": media_type}]},
         }},
     )
-    return res is not None and res.status_code == 200
+    if res is None or res.status_code != 200:
+        st.warning(f"TMDB_ID保存失敗 ({tmdb_id}): {res.status_code if res else 'None'} {res.text if res else ''}")
+        return False
+    return True
 
 def fetch_tmdb_by_id(tmdb_id: int, media_type: str) -> dict | None:
     res = api_request(
