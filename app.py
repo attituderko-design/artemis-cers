@@ -75,27 +75,31 @@ def is_incomplete(page) -> bool:
     return False
 
 # ============================================================
-# Drive ファイル操作
+# Drive ファイル一覧（session_stateで管理）
 # ============================================================
 
-@st.cache_data(ttl=300)
-def list_drive_files() -> dict:
+def get_drive_files() -> dict:
+    """session_stateからDriveファイル一覧を取得。なければ取得してキャッシュ。"""
+    if "drive_files_cache" not in st.session_state:
+        refresh_drive_files()
+    return st.session_state.drive_files_cache
+
+def refresh_drive_files():
+    """Driveファイル一覧を強制再取得してsession_stateに保存。"""
     service = get_drive_service()
     results = service.files().list(
         q=f"'{DRIVE_FOLDER_ID}' in parents and trashed=false",
         fields="files(id, name)",
         pageSize=1000,
     ).execute()
-    return {f["name"]: f["id"] for f in results.get("files", [])}
+    st.session_state.drive_files_cache = {f["name"]: f["id"] for f in results.get("files", [])}
 
 def drive_exists(title: str, tmdb_id) -> bool:
-    files = list_drive_files()
-    return make_filename(title, tmdb_id) in files
+    return make_filename(title, tmdb_id) in get_drive_files()
 
 def drive_exists_fuzzy(title: str) -> bool:
     prefix = sanitize_filename(title) + "_"
-    files  = list_drive_files()
-    return any(name.startswith(prefix) and name.endswith(".jpg") for name in files)
+    return any(name.startswith(prefix) and name.endswith(".jpg") for name in get_drive_files())
 
 def save_to_drive(cover_url: str, title: str, tmdb_id) -> bool:
     try:
@@ -103,16 +107,25 @@ def save_to_drive(cover_url: str, title: str, tmdb_id) -> bool:
         img_res = api_request("get", img_url)
         if img_res is None or img_res.status_code != 200:
             return False
+
         service = get_drive_service()
         fname   = make_filename(title, tmdb_id)
-        files   = list_drive_files()
+        files   = get_drive_files()
         media   = MediaIoBaseUpload(io.BytesIO(img_res.content), mimetype="image/jpeg", resumable=False)
+
         if fname in files:
             service.files().update(fileId=files[fname], media_body=media).execute()
         else:
-            service.files().create(body={"name": fname, "parents": [DRIVE_FOLDER_ID]}, media_body=media, fields="id").execute()
-        list_drive_files.clear()
+            service.files().create(
+                body={"name": fname, "parents": [DRIVE_FOLDER_ID]},
+                media_body=media,
+                fields="id",
+            ).execute()
+
+        # session_stateのキャッシュに即時反映
+        st.session_state.drive_files_cache[fname] = True
         return True
+
     except Exception as e:
         st.warning(f"Drive保存失敗 ({title}): {e}")
         return False
@@ -343,6 +356,8 @@ with st.sidebar:
             st.session_state.pages_loaded   = True
             st.session_state.search_results = {}
             st.session_state.manual_page    = 0
+            # Driveキャッシュも同時にリフレッシュ
+            refresh_drive_files()
         st.success(f"{len(st.session_state.pages)} 件取得しました")
 
     st.divider()
