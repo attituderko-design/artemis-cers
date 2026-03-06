@@ -492,6 +492,7 @@ if mode == "自動同期" and st.session_state.is_running:
 
                 if url_matched and need_drive:
                     d_ok = save_to_drive(cover_url, log_title, tmdb_id)
+                    save_tmdb_id_to_notion(item["id"], tmdb_id, media_type)
                     meta_ok, meta_log = False, "（取得失敗）"
                     try:
                         details  = fetch_tmdb_details(tmdb_id, media_type)
