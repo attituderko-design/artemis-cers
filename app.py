@@ -65,10 +65,6 @@ def get_current_notion_url(item) -> str | None:
 
 @st.cache_data(ttl=300)
 def list_drive_files() -> dict:
-    """
-    postersフォルダ内のファイル一覧を {ファイル名: file_id} で返す。
-    5分キャッシュ。
-    """
     service = get_drive_service()
     results = service.files().list(
         q=f"'{DRIVE_FOLDER_ID}' in parents and trashed=false",
@@ -78,12 +74,10 @@ def list_drive_files() -> dict:
     return {f["name"]: f["id"] for f in results.get("files", [])}
 
 def drive_exists(title: str, tmdb_id) -> bool:
-    """Drive上に タイトル_tmdbid.jpg が存在するか"""
     files = list_drive_files()
     return make_filename(title, tmdb_id) in files
 
 def drive_exists_fuzzy(title: str) -> bool:
-    """tmdb_id不明時: タイトル_*.jpg が1つでもあればOK"""
     prefix = sanitize_filename(title) + "_"
     files  = list_drive_files()
     return any(name.startswith(prefix) and name.endswith(".jpg") for name in files)
@@ -106,20 +100,17 @@ def save_to_drive(cover_url: str, title: str, tmdb_id) -> bool:
             resumable=False,
         )
         if fname in files:
-            # 既存ファイルを上書き更新
             service.files().update(
                 fileId=files[fname],
                 media_body=media,
             ).execute()
         else:
-            # 新規アップロード
             service.files().create(
                 body={"name": fname, "parents": [DRIVE_FOLDER_ID]},
                 media_body=media,
                 fields="id",
             ).execute()
 
-        # キャッシュを破棄して次回取得時に最新化
         list_drive_files.clear()
         return True
 
@@ -132,7 +123,6 @@ def save_to_drive(cover_url: str, title: str, tmdb_id) -> bool:
 # ============================================================
 
 def get_diff_status(item) -> tuple:
-    """(notion_has_cover: bool, drive_has_file: bool) を返す"""
     log_title, _, _ = get_title(item["properties"])
     notion_ok = bool(item.get("cover"))
     tmdb_id   = st.session_state.get("tmdb_id_cache", {}).get(item["id"])
@@ -162,12 +152,6 @@ def diff_badge(item) -> str:
 # ============================================================
 
 def api_request(method: str, url: str, max_retries: int = 3, **kwargs):
-    """
-    - 429: Retry-After 待機してリトライ
-    - 5xx: 指数バックオフ (2^n 秒) でリトライ
-    - 例外: 指数バックオフでリトライ
-    戻り値: Response or None（全リトライ失敗）
-    """
     fn = {"get": requests.get, "post": requests.post, "patch": requests.patch}[method]
     for attempt in range(max_retries):
         try:
@@ -213,17 +197,12 @@ def filter_target_pages(all_pages: list) -> list:
     ]
 
 def get_tmdb_id_from_notion(props) -> tuple:
-    """
-    NotionプロパティからTMDB_IDとMEDIA_TYPEを取得する。
-    戻り値: (tmdb_id: int|None, media_type: str|None)
-    """
     tmdb_id_val = props.get("TMDB_ID", {}).get("number")
     media_type_val = props.get("MEDIA_TYPE", {}).get("select", {})
     media_type = media_type_val.get("name") if media_type_val else None
     return (int(tmdb_id_val) if tmdb_id_val else None), media_type
 
 def save_tmdb_id_to_notion(page_id: str, tmdb_id: int, media_type: str) -> bool:
-    """TMDB_IDとMEDIA_TYPEをNotionに保存する"""
     res = api_request(
         "patch",
         f"https://api.notion.com/v1/pages/{page_id}",
@@ -236,10 +215,6 @@ def save_tmdb_id_to_notion(page_id: str, tmdb_id: int, media_type: str) -> bool:
     return res is not None and res.status_code == 200
 
 def fetch_tmdb_by_id(tmdb_id: int, media_type: str) -> dict | None:
-    """
-    TMDB_IDで直接ポスター情報を取得する。
-    戻り値: TMDBのレスポンスdict（poster_pathなければNone）
-    """
     res = api_request(
         "get",
         f"https://api.themoviedb.org/3/{media_type}/{tmdb_id}",
@@ -250,7 +225,6 @@ def fetch_tmdb_by_id(tmdb_id: int, media_type: str) -> dict | None:
     data = res.json()
     if not data.get("poster_path"):
         return None
-    # search_tmdb と同じ形式に合わせる
     data["media_type"] = media_type
     return data
 
@@ -264,44 +238,28 @@ def search_tmdb(query: str, year=None) -> list:
     return [r for r in res.json().get("results", []) if r.get("poster_path") and r.get("media_type") in ["movie", "tv"]]
 
 def fetch_tmdb_details(tmdb_id: int, media_type: str) -> dict:
-    """
-    TMDBからジャンル・キャスト・監督を日本語で取得する。
-    戻り値: {
-        "genres":   ["アクション", "SF", ...],
-        "cast":     "山田太郎 / 田中花子 / 鈴木一郎",
-        "director": "スティーブン・スピルバーグ",
-    }
-    """
     base = "https://api.themoviedb.org/3"
     params_ja = {"api_key": TMDB_API_KEY, "language": "ja-JP"}
 
-    # 基本情報（ジャンル）
     detail_res = api_request("get", f"{base}/{media_type}/{tmdb_id}", params=params_ja)
     genres = []
     if detail_res and detail_res.status_code == 200:
         genres = [g["name"] for g in detail_res.json().get("genres", [])]
 
-    # クレジット（キャスト・監督）
     credit_endpoint = "credits" if media_type == "movie" else "aggregate_credits"
     credit_res = api_request("get", f"{base}/{media_type}/{tmdb_id}/{credit_endpoint}", params=params_ja)
     cast_names, director_name = [], ""
 
     if credit_res and credit_res.status_code == 200:
         data = credit_res.json()
-
-        # キャスト（主演3名）: 日本語名があれば使う
         for member in data.get("cast", [])[:3]:
-            name = member.get("name", "")
-            cast_names.append(name)
-
-        # 監督
+            cast_names.append(member.get("name", ""))
         if media_type == "movie":
             for member in data.get("crew", []):
                 if member.get("job") == "Director":
                     director_name = member.get("name", "")
                     break
         else:
-            # ドラマは created_by から取得
             tv_res = api_request("get", f"{base}/tv/{tmdb_id}", params=params_ja)
             if tv_res and tv_res.status_code == 200:
                 creators = tv_res.json().get("created_by", [])
@@ -315,25 +273,15 @@ def fetch_tmdb_details(tmdb_id: int, media_type: str) -> dict:
     }
 
 def update_notion_metadata(page_id: str, details: dict) -> bool:
-    """ジャンル・出演者・監督をNotionに上書き更新する"""
     properties = {}
-
     if details["genres"]:
-        properties["ジャンル"] = {
-            "multi_select": [{"name": g} for g in details["genres"]]
-        }
+        properties["ジャンル"] = {"multi_select": [{"name": g} for g in details["genres"]]}
     if details["cast"]:
-        properties["出演者・主催"] = {
-            "rich_text": [{"type": "text", "text": {"content": details["cast"]}}]
-        }
+        properties["出演者・主催"] = {"rich_text": [{"type": "text", "text": {"content": details["cast"]}}]}
     if details["director"]:
-        properties["監督・指揮者"] = {
-            "rich_text": [{"type": "text", "text": {"content": details["director"]}}]
-        }
-
+        properties["監督・指揮者"] = {"rich_text": [{"type": "text", "text": {"content": details["director"]}}]}
     if not properties:
-        return True  # 更新するものがなければスキップ
-
+        return True
     res = api_request(
         "patch",
         f"https://api.notion.com/v1/pages/{page_id}",
@@ -351,7 +299,6 @@ def update_notion_cover(page_id: str, cover_url: str, tmdb_release, existing_rel
     return res is not None and res.status_code == 200
 
 def build_meta_log(details: dict) -> str:
-    """更新したメタデータの内容を1行のログ文字列にまとめる"""
     parts = []
     if details.get("genres"):
         parts.append(f"ジャンル: {' / '.join(details['genres'])}")
@@ -363,18 +310,11 @@ def build_meta_log(details: dict) -> str:
 
 def update_all(page_id, cover_url, tmdb_release, existing_release,
                title, tmdb_id, media_type, need_notion, need_drive) -> tuple:
-    """
-    need_notion / need_drive フラグに応じて必要な更新を実行。
-    メタデータ（ジャンル・出演者・監督）・TMDB_IDは常に更新。
-    戻り値: (notion_ok, drive_ok, meta_ok, meta_log)
-    """
     notion_ok = update_notion_cover(page_id, cover_url, tmdb_release, existing_release) if need_notion else True
     drive_ok  = save_to_drive(cover_url, title, tmdb_id) if need_drive else True
 
-    # TMDB_ID / MEDIA_TYPE を常に保存（ID中心設計）
     save_tmdb_id_to_notion(page_id, tmdb_id, media_type)
 
-    # メタデータは常に上書き更新
     meta_ok, meta_log = False, "（取得失敗）"
     try:
         details  = fetch_tmdb_details(tmdb_id, media_type)
@@ -514,7 +454,6 @@ if mode == "自動同期" and st.session_state.is_running:
             query            = en if en else jp
 
             try:
-                # --- TMDB_IDがあればID直接取得、なければ検索 ---
                 saved_tmdb_id, saved_media_type = get_tmdb_id_from_notion(props)
 
                 if saved_tmdb_id and saved_media_type:
@@ -661,7 +600,6 @@ if mode == "手動確認":
             col_s1.metric("Notionカバー", "登録済" if notion_ok_now else "未登録")
             col_s2.metric("Drive画像",   "あり"   if drive_ok_now  else "なし")
 
-            # TMDB_ID表示
             saved_tmdb_id, saved_media_type = get_tmdb_id_from_notion(props)
             col_s3.metric("TMDB_ID", str(saved_tmdb_id) if saved_tmdb_id else "未登録")
 
@@ -676,7 +614,6 @@ if mode == "手動確認":
                 query            = en if en else jp
                 try:
                     if saved_tmdb_id and saved_media_type:
-                        # ID直接取得（1件確定）
                         top = fetch_tmdb_by_id(saved_tmdb_id, saved_media_type)
                         st.session_state.search_results[page_id] = [top] if top else []
                     else:
