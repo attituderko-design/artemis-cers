@@ -212,6 +212,48 @@ def filter_target_pages(all_pages: list) -> list:
         )
     ]
 
+def get_tmdb_id_from_notion(props) -> tuple:
+    """
+    NotionプロパティからTMDB_IDとMEDIA_TYPEを取得する。
+    戻り値: (tmdb_id: int|None, media_type: str|None)
+    """
+    tmdb_id_val = props.get("TMDB_ID", {}).get("number")
+    media_type_val = props.get("MEDIA_TYPE", {}).get("select", {})
+    media_type = media_type_val.get("name") if media_type_val else None
+    return (int(tmdb_id_val) if tmdb_id_val else None), media_type
+
+def save_tmdb_id_to_notion(page_id: str, tmdb_id: int, media_type: str) -> bool:
+    """TMDB_IDとMEDIA_TYPEをNotionに保存する"""
+    res = api_request(
+        "patch",
+        f"https://api.notion.com/v1/pages/{page_id}",
+        headers=NOTION_HEADERS,
+        json={"properties": {
+            "TMDB_ID":    {"number": tmdb_id},
+            "MEDIA_TYPE": {"select": {"name": media_type}},
+        }},
+    )
+    return res is not None and res.status_code == 200
+
+def fetch_tmdb_by_id(tmdb_id: int, media_type: str) -> dict | None:
+    """
+    TMDB_IDで直接ポスター情報を取得する。
+    戻り値: TMDBのレスポンスdict（poster_pathなければNone）
+    """
+    res = api_request(
+        "get",
+        f"https://api.themoviedb.org/3/{media_type}/{tmdb_id}",
+        params={"api_key": TMDB_API_KEY, "language": "en-US"},
+    )
+    if res is None or res.status_code != 200:
+        return None
+    data = res.json()
+    if not data.get("poster_path"):
+        return None
+    # search_tmdb と同じ形式に合わせる
+    data["media_type"] = media_type
+    return data
+
 def search_tmdb(query: str, year=None) -> list:
     params = {"api_key": TMDB_API_KEY, "query": query, "language": "en-US"}
     if year:
@@ -323,11 +365,14 @@ def update_all(page_id, cover_url, tmdb_release, existing_release,
                title, tmdb_id, media_type, need_notion, need_drive) -> tuple:
     """
     need_notion / need_drive フラグに応じて必要な更新を実行。
-    メタデータ（ジャンル・出演者・監督）は常に更新。
+    メタデータ（ジャンル・出演者・監督）・TMDB_IDは常に更新。
     戻り値: (notion_ok, drive_ok, meta_ok, meta_log)
     """
     notion_ok = update_notion_cover(page_id, cover_url, tmdb_release, existing_release) if need_notion else True
     drive_ok  = save_to_drive(cover_url, title, tmdb_id) if need_drive else True
+
+    # TMDB_ID / MEDIA_TYPE を常に保存（ID中心設計）
+    save_tmdb_id_to_notion(page_id, tmdb_id, media_type)
 
     # メタデータは常に上書き更新
     meta_ok, meta_log = False, "（取得失敗）"
@@ -469,18 +514,26 @@ if mode == "自動同期" and st.session_state.is_running:
             query            = en if en else jp
 
             try:
-                results = search_tmdb(query, existing_release[:4] if existing_release else None)
-                top     = results[0] if results else None
+                # --- TMDB_IDがあればID直接取得、なければ検索 ---
+                saved_tmdb_id, saved_media_type = get_tmdb_id_from_notion(props)
+
+                if saved_tmdb_id and saved_media_type:
+                    top = fetch_tmdb_by_id(saved_tmdb_id, saved_media_type)
+                    src = "🆔 ID参照"
+                else:
+                    results = search_tmdb(query, existing_release[:4] if existing_release else None)
+                    top     = results[0] if results else None
+                    src     = "🔍 検索"
 
                 if not top:
-                    st.write(f"🔍 候補なし: {log_title}")
-                    error_log.append(f"🔍 候補なし: {log_title}")
+                    st.write(f"候補なし ({src}): {log_title}")
+                    error_log.append(f"候補なし ({src}): {log_title}")
                     pbar.progress((i + 1) / len(sync_targets))
                     time.sleep(0.1)
                     continue
 
                 tmdb_id      = top["id"]
-                media_type   = top.get("media_type", "movie")
+                media_type   = top.get("media_type", saved_media_type or "movie")
                 cover_url    = f"https://image.tmdb.org/t/p/w600_and_h900_bestv2{top['poster_path']}"
                 tmdb_release = top.get("release_date") or top.get("first_air_date")
                 st.session_state.tmdb_id_cache[item["id"]] = tmdb_id
@@ -523,7 +576,7 @@ if mode == "自動同期" and st.session_state.is_running:
                 if need_notion: parts.append("Notion " + ("✅" if n_ok else "❌"))
                 if need_drive:  parts.append("Drive "  + ("✅" if d_ok else "❌"))
                 parts.append("メタ " + ("✅" if meta_ok else "❌"))
-                st.write(f"{log_title}　{'　'.join(parts)}")
+                st.write(f"{log_title}　{src}　{'　'.join(parts)}")
                 if meta_ok:
                     st.caption(f"　　↳ {meta_log}")
                 if n_ok and d_ok and meta_ok:
@@ -604,21 +657,31 @@ if mode == "手動確認":
         notion_ok_now, drive_ok_now = get_diff_status(item)
 
         with st.expander(f"{diff_badge(item)}  {log_title}"):
-            col_s1, col_s2 = st.columns(2)
+            col_s1, col_s2, col_s3 = st.columns(3)
             col_s1.metric("Notionカバー", "登録済" if notion_ok_now else "未登録")
             col_s2.metric("Drive画像",   "あり"   if drive_ok_now  else "なし")
+
+            # TMDB_ID表示
+            saved_tmdb_id, saved_media_type = get_tmdb_id_from_notion(props)
+            col_s3.metric("TMDB_ID", str(saved_tmdb_id) if saved_tmdb_id else "未登録")
 
             current_url = get_current_notion_url(item)
             if current_url:
                 st.caption(f"現在のURL: `{current_url}`")
 
-            if st.button("🔍 候補を検索", key=f"search_{page_id}"):
+            btn_label = "🆔 ID参照で取得" if saved_tmdb_id else "🔍 候補を検索"
+            if st.button(btn_label, key=f"search_{page_id}"):
                 date_prop        = props.get("公開", {}).get("date")
                 existing_release = date_prop.get("start") if date_prop else None
                 query            = en if en else jp
                 try:
-                    results = search_tmdb(query, existing_release[:4] if existing_release else None)
-                    st.session_state.search_results[page_id] = results[:3]
+                    if saved_tmdb_id and saved_media_type:
+                        # ID直接取得（1件確定）
+                        top = fetch_tmdb_by_id(saved_tmdb_id, saved_media_type)
+                        st.session_state.search_results[page_id] = [top] if top else []
+                    else:
+                        results = search_tmdb(query, existing_release[:4] if existing_release else None)
+                        st.session_state.search_results[page_id] = results[:3]
                 except Exception as e:
                     st.error(f"検索エラー: {e}")
                     st.session_state.search_results[page_id] = []
