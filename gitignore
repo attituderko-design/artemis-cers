@@ -1,0 +1,10 @@
+# secretsは絶対にGitHubにpushしない
+.streamlit/secrets.toml
+
+# サービスアカウントJSONが単体ファイルの場合も念のため
+*.json
+
+# Python
+__pycache__/
+*.pyc
+.env
