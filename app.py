@@ -489,16 +489,25 @@ if mode == "自動同期" and st.session_state.is_running:
                 if url_matched and need_drive:
                     d_ok = save_to_drive(cover_url, log_title, tmdb_id)
                     save_tmdb_id_to_notion(item["id"], tmdb_id, media_type)
-                    meta_ok, meta_log = False, "（取得失敗）"
-                    try:
-                        details  = fetch_tmdb_details(tmdb_id, media_type)
-                        meta_ok  = update_notion_metadata(item["id"], details)
-                        meta_log = build_meta_log(details)
-                    except Exception:
-                        pass
+                    # メタデータは空のときだけ更新
+                    need_meta = (
+                        not props.get("ジャンル", {}).get("multi_select")
+                        or not props.get("出演者・主催", {}).get("rich_text")
+                        or not props.get("監督・指揮者", {}).get("rich_text")
+                    )
+                    meta_ok, meta_log = True, ""
+                    if need_meta:
+                        meta_ok, meta_log = False, "（取得失敗）"
+                        try:
+                            details  = fetch_tmdb_details(tmdb_id, media_type)
+                            meta_ok  = update_notion_metadata(item["id"], details)
+                            meta_log = build_meta_log(details)
+                        except Exception:
+                            pass
                     label = "📥 補充" if d_ok else "❌ Drive保存失敗"
-                    st.write(f"{label} {'✅' if d_ok else '❌'}　メタ {'✅' if meta_ok else '❌'}: {log_title}")
-                    if meta_ok:
+                    meta_label = f"　メタ {'✅' if meta_ok else '❌'}" if need_meta else ""
+                    st.write(f"{label} {'✅' if d_ok else '❌'}{meta_label}: {log_title}")
+                    if need_meta and meta_ok:
                         st.caption(f"　　↳ {meta_log}")
                     if d_ok:
                         count += 1
