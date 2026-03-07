@@ -513,7 +513,7 @@ def build_update_log(log_title, src, need_notion, notion_ok, need_drive, drive_o
 
 st.set_page_config(page_title="ArtéMis", page_icon="favicon.png", layout="wide")
 st.image("logo.png", width=320)
-st.caption("v1.42")
+st.caption("v1.4")
 
 for key, default in {
     "is_running":         False,
@@ -768,7 +768,7 @@ if mode == "自動同期" and st.session_state.is_running:
         sync_targets = get_display_pages()
     label_mode   = "🔄 リフレッシュ" if is_refresh else "⚙️ 自動同期"
 
-    with st.status(f"{label_mode}中... 対象 {len(sync_targets)} 件", expanded=True) as status:
+    with st.status(f"{label_mode}中... 0 / {len(sync_targets)} 件", expanded=True) as status:
         pbar, count = st.progress(0), 0
         success_log: list[str] = []
         maintain_log: list[str] = []
@@ -799,6 +799,7 @@ if mode == "自動同期" and st.session_state.is_running:
                 success_log.append(msg)
                 count += 1
                 pbar.progress((i + 1) / len(sync_targets))
+                status.update(label=f"{label_mode}中... {i + 1} / {len(sync_targets)} 件", state="running")
                 time.sleep(0.1)
                 continue
             need_notion = True if is_refresh else not notion_ok_now
@@ -894,6 +895,7 @@ if mode == "自動同期" and st.session_state.is_running:
                 error_log.append(msg)
 
             pbar.progress((i + 1) / len(sync_targets))
+            status.update(label=f"{label_mode}中... {i + 1} / {len(sync_targets)} 件", state="running")
             time.sleep(0.1)
 
         status.update(
