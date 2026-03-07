@@ -666,11 +666,11 @@ if mode == "手動確認":
                     if new_tmdb_id > 0:
                         ok = save_tmdb_id_to_notion(page_id, new_tmdb_id, new_media_type)
                         if ok:
-                            st.success("保存しました！")
                             for p in st.session_state.pages:
                                 if p["id"] == page_id:
                                     p["properties"]["TMDB_ID"]    = {"number": new_tmdb_id}
                                     p["properties"]["MEDIA_TYPE"] = {"multi_select": [{"name": new_media_type}]}
+                            st.rerun()
                     else:
                         st.warning("TMDB_IDを入力してください")
 
