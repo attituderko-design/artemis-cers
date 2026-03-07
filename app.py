@@ -430,7 +430,7 @@ def create_notion_page(jp_title: str, en_title: str, media_type_label: str,
     if watched_date:
         properties["鑑賞日"] = {"date": {"start": watched_date}}
     if rating:
-        properties["評価"] = {"multi_select": [{"name": rating}]}
+        properties["評価"] = {"select": {"name": rating}}
     if details.get("genres"):
         properties["ジャンル"] = {"multi_select": [{"name": g} for g in details["genres"]]}
     if details.get("cast"):
@@ -466,8 +466,8 @@ def build_update_log(log_title, src, need_notion, notion_ok, need_drive, drive_o
 # アプリ初期化
 # ============================================================
 
-st.set_page_config(page_title="ArtéMis", page_icon="🌙", layout="wide")
-st.title("ArtéMis v1.0")
+st.set_page_config(page_title="Notion Movie Master", page_icon="🎬", layout="wide")
+st.title("🎬 Notion ポスター同期")
 
 for key, default in {
     "is_running":       False,
