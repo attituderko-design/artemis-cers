@@ -513,7 +513,7 @@ def build_update_log(log_title, src, need_notion, notion_ok, need_drive, drive_o
 
 st.set_page_config(page_title="ArtéMis", page_icon="favicon.png", layout="wide")
 st.image("logo.png", width=320)
-st.caption("v1.41")
+st.caption("v1.4")
 
 for key, default in {
     "is_running":         False,
