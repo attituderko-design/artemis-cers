@@ -29,12 +29,12 @@ NOTION_HEADERS = {
 BOOTSTRAP_CDN = "https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.3/icons/{}.svg"
 
 MEDIA_ICON_MAP = {
-    "映画":          ("🎬 映画",          "https://drive.google.com/uc?id=1cZAhzuXDdnTO2K3nPDjux9As008sa9gM"),
-    "ドラマ":        ("📺 ドラマ",        "https://drive.google.com/uc?id=10PcWDk4PLVdJHetcfsfN0j98dxUw2QgX"),
-    "演奏会":        ("🎻 演奏会",        "https://drive.google.com/uc?id=1qjtPgiX5ac0bshNMRflN4U0v-t181Nk9"),
-    "展示会":        ("🖼️ 展示会",        "https://drive.google.com/uc?id=1ZuyskBgvI0cfZmzelkog4qhzmzlbyYIy"),
-    "ライブ/ショー": ("🎤 ライブ/ショー", "https://drive.google.com/uc?id=1aD4cXTP4h9KZEb2v2z6k7NShqW8DqUbr"),
-    "書籍":          ("📖 書籍",          "https://drive.google.com/uc?id=1_PKbMmepX28j_t7ODcHek8rSO6irNRvv"),
+    "映画":          ("🎬 映画",          "https://raw.githubusercontent.com/attituderko-design/notion-poster-sync/refs/heads/main/camera-reels.svg"),
+    "ドラマ":        ("📺 ドラマ",        "https://raw.githubusercontent.com/attituderko-design/notion-poster-sync/refs/heads/main/display.svg"),
+    "演奏会":        ("🎻 演奏会",        "https://raw.githubusercontent.com/attituderko-design/notion-poster-sync/refs/heads/main/music-note-beamed.svg"),
+    "展示会":        ("🖼️ 展示会",        "https://raw.githubusercontent.com/attituderko-design/notion-poster-sync/refs/heads/main/image.svg"),
+    "ライブ/ショー": ("🎤 ライブ/ショー", "https://raw.githubusercontent.com/attituderko-design/notion-poster-sync/refs/heads/main/mic.svg"),
+    "書籍":          ("📖 書籍",          "https://raw.githubusercontent.com/attituderko-design/notion-poster-sync/refs/heads/main/book.svg"),
 }
 
 RATING_OPTIONS = ["", "★", "★★", "★★★", "★★★★", "★★★★★"]
@@ -519,7 +519,7 @@ def build_update_log(log_title, src, need_notion, notion_ok, need_drive, drive_o
 # ============================================================
 
 st.set_page_config(page_title="ArtéMis", page_icon="🌙", layout="wide")
-st.title("🌙 ArtéMis v1.2")
+st.title("🌙 ArtéMis v1.21")
 
 for key, default in {
     "is_running":         False,
