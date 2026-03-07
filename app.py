@@ -511,8 +511,9 @@ def build_update_log(log_title, src, need_notion, notion_ok, need_drive, drive_o
 # アプリ初期化
 # ============================================================
 
-st.set_page_config(page_title="ArtéMis", page_icon="🌙", layout="wide")
-st.title("🌙 ArtéMis v1.31")
+st.set_page_config(page_title="ArtéMis", page_icon="favicon.png", layout="wide")
+st.image("logo.png", width=320)
+st.caption("v1.4")
 
 for key, default in {
     "is_running":         False,
