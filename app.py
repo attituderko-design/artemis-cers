@@ -13,9 +13,9 @@ import io
 # ============================================================
 # 設定（secrets.toml から読み込み）
 # ============================================================
-NOTION_API_KEY = st.secrets["NOTION_API_KEY"]
-NOTION_DB_ID   = st.secrets["NOTION_DB_ID"]
-TMDB_API_KEY   = st.secrets["TMDB_API_KEY"]
+NOTION_API_KEY  = st.secrets["NOTION_API_KEY"]
+NOTION_DB_ID    = st.secrets["NOTION_DB_ID"]
+TMDB_API_KEY    = st.secrets["TMDB_API_KEY"]
 DRIVE_FOLDER_ID = st.secrets["DRIVE_FOLDER_ID"]
 
 NOTION_HEADERS = {
@@ -62,18 +62,12 @@ def get_current_notion_url(item) -> str | None:
 
 def is_incomplete(page) -> bool:
     props = page["properties"]
-    if not page.get("cover"):
-        return True
-    if not props.get("TMDB_ID", {}).get("number"):
-        return True
-    if not props.get("ジャンル", {}).get("multi_select"):
-        return True
-    if not props.get("出演者・主催", {}).get("rich_text"):
-        return True
-    if not props.get("監督・指揮者", {}).get("rich_text"):
-        return True
-    if props.get("TMDB_score", {}).get("number") is None:
-        return True
+    if not page.get("cover"):                              return True
+    if not props.get("TMDB_ID", {}).get("number"):         return True
+    if not props.get("ジャンル", {}).get("multi_select"):  return True
+    if not props.get("出演者・主催", {}).get("rich_text"):  return True
+    if not props.get("監督・指揮者", {}).get("rich_text"):  return True
+    if props.get("TMDB_score", {}).get("number") is None:  return True
     return False
 
 # ============================================================
@@ -81,13 +75,11 @@ def is_incomplete(page) -> bool:
 # ============================================================
 
 def get_drive_files() -> dict:
-    """session_stateからDriveファイル一覧を取得。なければ取得してキャッシュ。"""
     if "drive_files_cache" not in st.session_state:
         refresh_drive_files()
     return st.session_state.drive_files_cache
 
 def refresh_drive_files():
-    """Driveファイル一覧を強制再取得してsession_stateに保存。"""
     service = get_drive_service()
     results = service.files().list(
         q=f"'{DRIVE_FOLDER_ID}' in parents and trashed=false",
@@ -109,12 +101,10 @@ def save_to_drive(cover_url: str, title: str, tmdb_id) -> bool:
         img_res = api_request("get", img_url)
         if img_res is None or img_res.status_code != 200:
             return False
-
         service = get_drive_service()
         fname   = make_filename(title, tmdb_id)
         files   = get_drive_files()
         media   = MediaIoBaseUpload(io.BytesIO(img_res.content), mimetype="image/jpeg", resumable=False)
-
         if fname in files:
             service.files().update(fileId=files[fname], media_body=media).execute()
         else:
@@ -123,11 +113,8 @@ def save_to_drive(cover_url: str, title: str, tmdb_id) -> bool:
                 media_body=media,
                 fields="id",
             ).execute()
-
-        # session_stateのキャッシュに即時反映
         st.session_state.drive_files_cache[fname] = True
         return True
-
     except Exception as e:
         st.warning(f"Drive保存失敗 ({title}): {e}")
         return False
@@ -159,7 +146,7 @@ def apply_diff_filter(pages: list, diff_filter: str) -> list:
 
 def diff_badge(item) -> str:
     notion_ok, drive_ok = get_diff_status(item)
-    return ("🟢N" if notion_ok else "🔴N") + " " + ("🟢D" if drive_ok else "🔴D")
+    return ("🟢Notion" if notion_ok else "🔴Notion") + " " + ("🟢Drive" if drive_ok else "🔴Drive")
 
 # ============================================================
 # APIリトライラッパー
@@ -254,6 +241,7 @@ def search_tmdb(query: str, year=None) -> list:
 def fetch_tmdb_details(tmdb_id: int, media_type: str) -> dict:
     base      = "https://api.themoviedb.org/3"
     params_ja = {"api_key": TMDB_API_KEY, "language": "ja-JP"}
+    params_en = {"api_key": TMDB_API_KEY, "language": "en-US"}
 
     detail_res = api_request("get", f"{base}/{media_type}/{tmdb_id}", params=params_ja)
     genres = []
@@ -280,9 +268,8 @@ def fetch_tmdb_details(tmdb_id: int, media_type: str) -> dict:
                 if creators:
                     director_name = creators[0].get("name", "")
 
-    # スコア取得（英語版で取得）
     score = None
-    score_res = api_request("get", f"{base}/{media_type}/{tmdb_id}", params={"api_key": TMDB_API_KEY, "language": "en-US"})
+    score_res = api_request("get", f"{base}/{media_type}/{tmdb_id}", params=params_en)
     if score_res and score_res.status_code == 200:
         score = score_res.json().get("vote_average")
 
@@ -293,20 +280,41 @@ def fetch_tmdb_details(tmdb_id: int, media_type: str) -> dict:
         "score":    round(score, 1) if score else None,
     }
 
-def update_notion_metadata(page_id: str, details: dict) -> bool:
+def update_notion_metadata(page_id: str, details: dict, force: bool = False, props: dict = None) -> tuple:
+    """
+    更新するプロパティだけを送信。
+    force=Trueなら全部上書き。
+    戻り値: (成功フラグ, 更新したプロパティ名リスト)
+    """
     properties = {}
-    if details["genres"]:
+    updated    = []
+
+    def needs_update(key):
+        if force or props is None: return True
+        if key == "ジャンル":      return not props.get("ジャンル", {}).get("multi_select")
+        if key == "出演者・主催":   return not props.get("出演者・主催", {}).get("rich_text")
+        if key == "監督・指揮者":   return not props.get("監督・指揮者", {}).get("rich_text")
+        if key == "TMDB_score":    return props.get("TMDB_score", {}).get("number") is None
+        return False
+
+    if details["genres"] and needs_update("ジャンル"):
         properties["ジャンル"] = {"multi_select": [{"name": g} for g in details["genres"]]}
-    if details["cast"]:
+        updated.append("ジャンル")
+    if details["cast"] and needs_update("出演者・主催"):
         properties["出演者・主催"] = {"rich_text": [{"type": "text", "text": {"content": details["cast"]}}]}
-    if details["director"]:
+        updated.append("出演者")
+    if details["director"] and needs_update("監督・指揮者"):
         properties["監督・指揮者"] = {"rich_text": [{"type": "text", "text": {"content": details["director"]}}]}
-    if details.get("score") is not None:
+        updated.append("監督")
+    if details.get("score") is not None and needs_update("TMDB_score"):
         properties["TMDB_score"] = {"number": details["score"]}
+        updated.append(f"スコア({details['score']})")
+
     if not properties:
-        return True
+        return True, []
+
     res = api_request("patch", f"https://api.notion.com/v1/pages/{page_id}", headers=NOTION_HEADERS, json={"properties": properties})
-    return res is not None and res.status_code == 200
+    return (res is not None and res.status_code == 200), updated
 
 def update_notion_cover(page_id: str, cover_url: str, tmdb_release, existing_release) -> bool:
     payload = {"cover": {"type": "external", "external": {"url": cover_url}}}
@@ -315,26 +323,33 @@ def update_notion_cover(page_id: str, cover_url: str, tmdb_release, existing_rel
     res = api_request("patch", f"https://api.notion.com/v1/pages/{page_id}", headers=NOTION_HEADERS, json=payload)
     return res is not None and res.status_code == 200
 
-def build_meta_log(details: dict) -> str:
-    parts = []
-    if details.get("genres"):   parts.append(f"ジャンル: {' / '.join(details['genres'])}")
-    if details.get("cast"):     parts.append(f"出演: {details['cast']}")
-    if details.get("director"): parts.append(f"監督: {details['director']}")
-    return "　".join(parts) if parts else "（取得データなし）"
-
 def update_all(page_id, cover_url, tmdb_release, existing_release,
-               title, tmdb_id, media_type, need_notion, need_drive) -> tuple:
-    notion_ok = update_notion_cover(page_id, cover_url, tmdb_release, existing_release) if need_notion else True
-    drive_ok  = save_to_drive(cover_url, title, tmdb_id) if need_drive else True
+               title, tmdb_id, media_type, need_notion, need_drive,
+               force_meta=False, props=None) -> tuple:
+    notion_ok        = update_notion_cover(page_id, cover_url, tmdb_release, existing_release) if need_notion else True
+    drive_ok         = save_to_drive(cover_url, title, tmdb_id) if need_drive else True
     save_tmdb_id_to_notion(page_id, tmdb_id, media_type)
-    meta_ok, meta_log = False, "（取得失敗）"
+    meta_ok, updated = False, []
     try:
-        details  = fetch_tmdb_details(tmdb_id, media_type)
-        meta_ok  = update_notion_metadata(page_id, details)
-        meta_log = build_meta_log(details)
+        details          = fetch_tmdb_details(tmdb_id, media_type)
+        meta_ok, updated = update_notion_metadata(page_id, details, force=force_meta, props=props)
     except Exception as e:
         st.warning(f"メタデータ更新失敗 ({title}): {e}")
-    return notion_ok, drive_ok, meta_ok, meta_log
+    return notion_ok, drive_ok, meta_ok, updated
+
+def build_update_log(log_title, src, need_notion, notion_ok, need_drive, drive_ok, meta_ok, updated, is_refresh=False) -> str:
+    parts = []
+    if is_refresh:
+        parts.append("🔄 リフレッシュ")
+    if need_notion:
+        parts.append("Notion " + ("✅" if notion_ok else "❌"))
+    if need_drive:
+        parts.append("Drive " + ("✅" if drive_ok else "❌"))
+    if updated:
+        parts.append("メタデータ[" + " / ".join(updated) + "] " + ("✅" if meta_ok else "❌"))
+    if not parts:
+        return f"⏸️ 維持(OK): {log_title}"
+    return f"{log_title}　{src}　{'　'.join(parts)}"
 
 # ============================================================
 # アプリ初期化
@@ -350,6 +365,7 @@ for key, default in {
     "search_results": {},
     "tmdb_id_cache":  {},
     "manual_page":    0,
+    "sync_mode":      "normal",
 }.items():
     if key not in st.session_state:
         st.session_state[key] = default
@@ -367,7 +383,6 @@ with st.sidebar:
             st.session_state.pages_loaded   = True
             st.session_state.search_results = {}
             st.session_state.manual_page    = 0
-            # Driveキャッシュも同時にリフレッシュ
             refresh_drive_files()
         st.success(f"{len(st.session_state.pages)} 件取得しました")
 
@@ -378,7 +393,7 @@ with st.sidebar:
 
     st.divider()
     st.header("差分フィルタ")
-    st.caption("🟢=登録済　🔴=未登録　N=Notion　D=Drive")
+    st.caption("🟢=登録済　🔴=未登録")
     diff_filter = st.radio(
         "対象を絞り込む",
         [
@@ -394,6 +409,11 @@ with st.sidebar:
         st.divider()
         if st.button("🚀 自動同期開始", use_container_width=True, disabled=not st.session_state.pages_loaded):
             st.session_state.is_running = True
+            st.session_state.sync_mode  = "normal"
+            st.rerun()
+        if st.button("🔄 リフレッシュ", use_container_width=True, disabled=not st.session_state.pages_loaded):
+            st.session_state.is_running = True
+            st.session_state.sync_mode  = "refresh"
             st.rerun()
         if st.button("⏹ 停止", use_container_width=True):
             st.session_state.is_running = False
@@ -442,12 +462,14 @@ if delete_btn:
     st.rerun()
 
 # ============================================================
-# 2. 自動同期
+# 2. 自動同期 / リフレッシュ
 # ============================================================
 if mode == "自動同期" and st.session_state.is_running:
-    sync_targets = get_display_pages()
+    is_refresh   = (st.session_state.sync_mode == "refresh")
+    sync_targets = target_pages if is_refresh else get_display_pages()
+    label_mode   = "🔄 リフレッシュ" if is_refresh else "⚙️ 自動同期"
 
-    with st.status(f"⚙️ 自動同期中... 対象 {len(sync_targets)} 件", expanded=True) as status:
+    with st.status(f"{label_mode}中... 対象 {len(sync_targets)} 件", expanded=True) as status:
         pbar, count = st.progress(0), 0
         error_log: list[str] = []
 
@@ -458,7 +480,9 @@ if mode == "自動同期" and st.session_state.is_running:
             props     = item["properties"]
             log_title, jp, en = get_title(props)
             notion_ok_now, drive_ok_now = get_diff_status(item)
-            need_notion, need_drive = resolve_needs(notion_ok_now, drive_ok_now)
+
+            need_notion = True if is_refresh else not notion_ok_now
+            need_drive  = True if is_refresh else not drive_ok_now
 
             date_prop        = props.get("公開", {}).get("date")
             existing_release = date_prop.get("start") if date_prop else None
@@ -491,55 +515,45 @@ if mode == "自動同期" and st.session_state.is_running:
                 current_url = get_current_notion_url(item)
                 url_matched = (current_url == cover_url)
 
-                if url_matched and not need_drive and not is_incomplete(item):
+                # 通常モード: 全部揃ってたら維持
+                if not is_refresh and url_matched and not need_drive and not is_incomplete(item):
                     st.write(f"⏸️ 維持(OK): {log_title}")
                     pbar.progress((i + 1) / len(sync_targets))
                     time.sleep(0.1)
                     continue
 
-                if url_matched and need_drive:
-                    d_ok = save_to_drive(cover_url, log_title, tmdb_id)
+                # 補充ルート: NotionカバーURLは合っているがDriveかメタデータが欠けている
+                if not is_refresh and url_matched and not need_drive:
                     save_tmdb_id_to_notion(item["id"], tmdb_id, media_type)
-                    # メタデータは空のときだけ更新
-                    need_meta = (
-                        not props.get("ジャンル", {}).get("multi_select")
-                        or not props.get("出演者・主催", {}).get("rich_text")
-                        or not props.get("監督・指揮者", {}).get("rich_text")
-                    )
-                    meta_ok, meta_log = True, ""
+                    need_meta = is_incomplete(item)
+                    meta_ok, updated = True, []
                     if need_meta:
-                        meta_ok, meta_log = False, "（取得失敗）"
                         try:
-                            details  = fetch_tmdb_details(tmdb_id, media_type)
-                            meta_ok  = update_notion_metadata(item["id"], details)
-                            meta_log = build_meta_log(details)
+                            details          = fetch_tmdb_details(tmdb_id, media_type)
+                            meta_ok, updated = update_notion_metadata(item["id"], details, force=False, props=props)
                         except Exception:
                             pass
-                    label = "📥 補充" if d_ok else "❌ Drive保存失敗"
-                    meta_label = f"　メタ {'✅' if meta_ok else '❌'}" if need_meta else ""
-                    st.write(f"{label} {'✅' if d_ok else '❌'}{meta_label}: {log_title}")
-                    if need_meta and meta_ok:
-                        st.caption(f"　　↳ {meta_log}")
-                    if d_ok:
-                        count += 1
-                    else:
-                        error_log.append(f"❌ Drive保存失敗: {log_title}")
+                    log = build_update_log(log_title, src, False, True, False, True, meta_ok, updated)
+                    st.write(log)
+                    if meta_ok and updated:
+                        st.caption(f"　　↳ {' / '.join(updated)}")
+                    count += 1
                     pbar.progress((i + 1) / len(sync_targets))
                     time.sleep(0.1)
                     continue
 
-                n_ok, d_ok, meta_ok, meta_log = update_all(
+                n_ok, d_ok, meta_ok, updated = update_all(
                     item["id"], cover_url, tmdb_release, existing_release,
                     log_title, tmdb_id, media_type, need_notion, need_drive,
+                    force_meta=is_refresh, props=props,
                 )
-                parts = []
-                if need_notion: parts.append("Notion " + ("✅" if n_ok else "❌"))
-                if need_drive:  parts.append("Drive "  + ("✅" if d_ok else "❌"))
-                parts.append("メタ " + ("✅" if meta_ok else "❌"))
-                st.write(f"{log_title}　{src}　{'　'.join(parts)}")
-                if meta_ok:
-                    st.caption(f"　　↳ {meta_log}")
-                if n_ok and d_ok and meta_ok:
+                log = build_update_log(log_title, src, need_notion, n_ok, need_drive, d_ok, meta_ok, updated, is_refresh)
+                st.write(log)
+                if updated:
+                    st.caption(f"　　↳ {' / '.join(updated)}")
+
+                all_ok = (not need_notion or n_ok) and (not need_drive or d_ok) and meta_ok
+                if all_ok:
                     count += 1
                 else:
                     fail_parts = []
@@ -555,7 +569,7 @@ if mode == "自動同期" and st.session_state.is_running:
             pbar.progress((i + 1) / len(sync_targets))
             time.sleep(0.1)
 
-        status.update(label=f"自動同期完了！計 {count} 件更新　失敗 {len(error_log)} 件", state="complete")
+        status.update(label=f"{label_mode}完了！計 {count} 件更新　失敗 {len(error_log)} 件", state="complete")
         if error_log:
             st.error(f"**⚠️ 要確認リスト（{len(error_log)} 件）**")
             for msg in error_log:
@@ -733,17 +747,17 @@ if mode == "手動確認":
                                         need_notion = False
                                         need_drive  = True
                                     st.session_state.tmdb_id_cache[page_id] = tmdb_id
-                                    n_ok, d_ok, meta_ok, meta_log = update_all(
+                                    n_ok, d_ok, meta_ok, updated = update_all(
                                         page_id, cover_url, tmdb_release, existing_release,
                                         log_title, tmdb_id, media_type, need_notion, need_drive,
+                                        force_meta=False, props=props,
                                     )
                                     parts = []
                                     if need_notion: parts.append("Notion " + ("✅" if n_ok else "❌失敗"))
                                     if need_drive:  parts.append("Drive "  + ("✅" if d_ok else "❌失敗"))
-                                    parts.append("メタ " + ("✅" if meta_ok else "❌失敗"))
+                                    if updated:     parts.append("メタデータ[" + " / ".join(updated) + "] " + ("✅" if meta_ok else "❌失敗"))
                                     if n_ok and d_ok and meta_ok:
                                         st.success("保存完了！ " + "　".join(parts))
-                                        st.caption(f"↳ {meta_log}")
                                         st.session_state.search_results.pop(page_id, None)
                                         if need_notion and n_ok:
                                             for p in st.session_state.pages:
