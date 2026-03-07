@@ -830,10 +830,8 @@ if mode == "手動確認":
                                     date_prop        = props.get("公開", {}).get("date")
                                     existing_release = date_prop.get("start") if date_prop else None
                                     media_type       = cand.get("media_type", "movie")
-                                    need_notion, need_drive = resolve_needs(notion_ok_now, drive_ok_now)
-                                    if url_match and need_notion:
-                                        need_notion = False
-                                        need_drive  = True
+                                    # 手動決定は最強の権限：全部強制上書き
+                                    need_notion, need_drive = True, True
                                     st.session_state.tmdb_id_cache[page_id] = tmdb_id
                                     n_ok, d_ok, meta_ok, updated = update_all(
                                         page_id, cover_url, tmdb_release, existing_release,
