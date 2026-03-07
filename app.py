@@ -519,7 +519,7 @@ def build_update_log(log_title, src, need_notion, notion_ok, need_drive, drive_o
 # ============================================================
 
 st.set_page_config(page_title="ArtéMis", page_icon="🌙", layout="wide")
-st.title("🌙 ArtéMis v1.22")
+st.title("🌙 ArtéMis v1.30")
 
 for key, default in {
     "is_running":         False,
@@ -530,7 +530,9 @@ for key, default in {
     "manual_page":        0,
     "sync_mode":          "normal",
     "new_search_results": [],
+    "new_search_done":    False,
     "confirm_reg":        None,
+    "registering":        False,
 }.items():
     if key not in st.session_state:
         st.session_state[key] = default
@@ -621,7 +623,8 @@ if mode == "新規登録":
         if query:
             results = search_tmdb(query)
             st.session_state.new_search_results = results[:10]
-            st.session_state.confirm_reg = None
+            st.session_state.new_search_done    = True
+            st.session_state.confirm_reg        = None
         else:
             st.warning("タイトルを入力してください")
 
@@ -647,38 +650,46 @@ if mode == "新規登録":
 
             col_ok, col_cancel = st.columns([1, 1])
             with col_ok:
-                if st.button("✅ 登録する", key="confirm_ok"):
-                    with st.spinner("登録中..."):
-                        details     = fetch_tmdb_details(reg["tmdb_id"], reg["media_type"])
-                        watched_str = watched_date.isoformat() if watched_date else None
-                        ok = create_notion_page(
-                            jp_title=final_jp,
-                            en_title=final_en,
-                            media_type_label=media_label,
-                            tmdb_id=reg["tmdb_id"],
-                            media_type=reg["media_type"],
-                            cover_url=reg["cover_url"],
-                            tmdb_release=reg["tmdb_release"],
-                            details=details,
-                            wlflg=wlflg,
-                            watched_date=watched_str,
-                            rating=rating_sel if rating_sel else None,
-                        )
-                        if ok:
-                            save_to_drive(reg["cover_url"], final_jp if final_jp else final_en, reg["tmdb_id"])
-                            st.session_state.confirm_reg        = None
-                            st.session_state.new_search_results = []
-                            st.success(f"✅ 登録完了！「{final_jp or final_en}」をNotionに追加しました")
-                            time.sleep(1.5)
-                            st.rerun()
-                        else:
-                            st.error("登録失敗しました")
+                if st.button("✅ 登録する", key="confirm_ok", disabled=st.session_state.registering):
+                    st.session_state.registering = True
+                    st.rerun()
             with col_cancel:
-                if st.button("❌ キャンセル", key="confirm_cancel"):
+                if st.button("❌ キャンセル", key="confirm_cancel", disabled=st.session_state.registering):
                     st.session_state.confirm_reg = None
                     st.rerun()
 
+            if st.session_state.registering:
+                with st.spinner("登録中..."):
+                    details     = fetch_tmdb_details(reg["tmdb_id"], reg["media_type"])
+                    watched_str = watched_date.isoformat() if watched_date else None
+                    ok = create_notion_page(
+                        jp_title=final_jp,
+                        en_title=final_en,
+                        media_type_label=media_label,
+                        tmdb_id=reg["tmdb_id"],
+                        media_type=reg["media_type"],
+                        cover_url=reg["cover_url"],
+                        tmdb_release=reg["tmdb_release"],
+                        details=details,
+                        wlflg=wlflg,
+                        watched_date=watched_str,
+                        rating=rating_sel if rating_sel else None,
+                    )
+                    st.session_state.registering = False
+                    if ok:
+                        save_to_drive(reg["cover_url"], final_jp if final_jp else final_en, reg["tmdb_id"])
+                        st.session_state.confirm_reg        = None
+                        st.session_state.new_search_results = []
+                        st.session_state.new_search_done    = False
+                        st.success(f"✅ 登録完了！「{final_jp or final_en}」をNotionに追加しました")
+                        time.sleep(1.5)
+                        st.rerun()
+                    else:
+                        st.error("登録失敗しました")
+
     # ── 候補一覧 ──
+    elif st.session_state.new_search_results == [] and "new_search_done" in st.session_state and st.session_state.new_search_done:
+        st.warning("候補が見つかりませんでした。検索ワードを変えて再試行してください。\nTMDBで直接検索してIDを確認する方法もあります → https://www.themoviedb.org")
     elif st.session_state.new_search_results:
         st.caption(f"{len(st.session_state.new_search_results)} 件の候補")
         for row_start in range(0, len(st.session_state.new_search_results), 3):
