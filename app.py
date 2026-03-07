@@ -838,7 +838,7 @@ if mode == "手動確認":
                                     n_ok, d_ok, meta_ok, updated = update_all(
                                         page_id, cover_url, tmdb_release, existing_release,
                                         log_title, tmdb_id, media_type, need_notion, need_drive,
-                                        force_meta=False, props=props,
+                                        force_meta=True, props=props,
                                     )
                                     parts = []
                                     if need_notion: parts.append("Notion " + ("✅" if n_ok else "❌失敗"))
