@@ -413,17 +413,24 @@ def update_all(page_id, cover_url, tmdb_release, existing_release,
 
 def create_notion_page(jp_title: str, en_title: str, media_type_label: str,
                        tmdb_id: int, media_type: str, cover_url: str,
-                       tmdb_release: str, details: dict) -> bool:
+                       tmdb_release: str, details: dict,
+                       wlflg: bool = False, watched_date: str | None = None,
+                       rating: str | None = None) -> bool:
     """Notionに新規ページを作成してポスター・メタデータも一括登録"""
     properties = {
-        "タイトル":           {"title": [{"type": "text", "text": {"content": jp_title}}]},
+        "タイトル":            {"title": [{"type": "text", "text": {"content": jp_title}}]},
         "International Title": {"rich_text": [{"type": "text", "text": {"content": en_title}}]},
-        "媒体":              {"multi_select": [{"name": media_type_label}]},
-        "TMDB_ID":           {"number": tmdb_id},
-        "MEDIA_TYPE":        {"multi_select": [{"name": media_type}]},
+        "媒体":               {"multi_select": [{"name": media_type_label}]},
+        "TMDB_ID":            {"number": tmdb_id},
+        "MEDIA_TYPE":         {"multi_select": [{"name": media_type}]},
+        "WLflg":              {"checkbox": wlflg},
     }
     if tmdb_release:
         properties["公開"] = {"date": {"start": tmdb_release}}
+    if watched_date:
+        properties["鑑賞日"] = {"date": {"start": watched_date}}
+    if rating:
+        properties["評価"] = {"multi_select": [{"name": rating}]}
     if details.get("genres"):
         properties["ジャンル"] = {"multi_select": [{"name": g} for g in details["genres"]]}
     if details.get("cast"):
@@ -542,13 +549,23 @@ with st.sidebar:
 # ============================================================
 # 新規登録モード
 # ============================================================
+MEDIA_OPTIONS  = ["映画", "ドラマ", "演奏会", "書籍", "展示会", "ライブ/ショー"]
+RATING_OPTIONS = ["", "★", "★★", "★★★", "★★★★", "★★★★★"]
+
 if mode == "新規登録":
     st.subheader("➕ 新規登録")
 
-    reg_col1, reg_col2, reg_col3 = st.columns([3, 3, 2])
-    jp_input    = reg_col1.text_input("日本語タイトル", placeholder="例: 千と千尋の神隠し")
-    en_input    = reg_col2.text_input("英語タイトル（検索用）", placeholder="例: Spirited Away")
-    media_label = reg_col3.selectbox("媒体", ["映画", "ドラマ"])
+    # 1行目：タイトル
+    col_jp, col_en = st.columns([1, 1])
+    jp_input = col_jp.text_input("日本語タイトル", placeholder="例: 千と千尋の神隠し")
+    en_input = col_en.text_input("英語タイトル（検索用）", placeholder="例: Spirited Away")
+
+    # 2行目：メタ情報
+    col_media, col_wl, col_date, col_rating = st.columns([2, 1, 2, 2])
+    media_label  = col_media.selectbox("媒体", MEDIA_OPTIONS)
+    wlflg        = col_wl.checkbox("WLflg", value=False)
+    watched_date = col_date.date_input("鑑賞日", value=None)
+    rating_sel   = col_rating.selectbox("評価", RATING_OPTIONS)
 
     if st.button("🔍 検索", key="new_search"):
         query = en_input if en_input else jp_input
@@ -578,8 +595,9 @@ if mode == "新規登録":
                     )
                     if st.button("✅ 登録", key=f"new_reg_{abs_idx}"):
                         with st.spinner("登録中..."):
-                            en_title = en_input or cand.get("title") or cand.get("name", "")
-                            details  = fetch_tmdb_details(tmdb_id, media_type)
+                            en_title     = en_input or cand.get("title") or cand.get("name", "")
+                            details      = fetch_tmdb_details(tmdb_id, media_type)
+                            watched_str  = watched_date.isoformat() if watched_date else None
                             ok = create_notion_page(
                                 jp_title=jp_input,
                                 en_title=en_title,
@@ -589,6 +607,9 @@ if mode == "新規登録":
                                 cover_url=cover_url,
                                 tmdb_release=tmdb_release,
                                 details=details,
+                                wlflg=wlflg,
+                                watched_date=watched_str,
+                                rating=rating_sel if rating_sel else None,
                             )
                             if ok:
                                 save_to_drive(cover_url, jp_input if jp_input else en_title, tmdb_id)
