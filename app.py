@@ -107,13 +107,15 @@ def save_to_drive(cover_url: str, title: str, tmdb_id) -> bool:
         media   = MediaIoBaseUpload(io.BytesIO(img_res.content), mimetype="image/jpeg", resumable=False)
         if fname in files:
             service.files().update(fileId=files[fname], media_body=media).execute()
+            # キャッシュのIDはそのまま維持
         else:
-            service.files().create(
+            result = service.files().create(
                 body={"name": fname, "parents": [DRIVE_FOLDER_ID]},
                 media_body=media,
                 fields="id",
             ).execute()
-        st.session_state.drive_files_cache[fname] = True
+            # 新規作成時は返ってきた実際のIDをキャッシュに保存
+            st.session_state.drive_files_cache[fname] = result["id"]
         return True
     except Exception as e:
         st.warning(f"Drive保存失敗 ({title}): {e}")
