@@ -314,19 +314,24 @@ def search_tmdb(query: str, year=None) -> list:
 
 
 def search_books(query: str) -> list:
-    """Google Books APIで書籍検索"""
-    res = api_request("get", "https://www.googleapis.com/books/v1/volumes",
-                      params={"q": query, "maxResults": 10})
-    if res is None or res.status_code != 200:
+    """Google Books APIで書籍検索（urllib使用）"""
+    import urllib.request, urllib.parse, json as _json
+    params = urllib.parse.urlencode({"q": query, "maxResults": 10})
+    url = f"https://www.googleapis.com/books/v1/volumes?{params}"
+    try:
+        with urllib.request.urlopen(url, timeout=10) as r:
+            data = _json.loads(r.read().decode())
+    except Exception as e:
+        st.warning(f"⚠️ Google Books API エラー: {e}")
         return []
-    items = res.json().get("items", [])
+    items = data.get("items", [])
+    st.caption(f"📚 Google Books: {len(items)} 件取得（画像なし含む）")
     results = []
     for item in items:
         info = item.get("volumeInfo", {})
         cover = info.get("imageLinks", {}).get("thumbnail") or info.get("imageLinks", {}).get("smallThumbnail")
         if not cover:
             continue
-        # httpsに変換
         cover = cover.replace("http://", "https://")
         results.append({
             "id":           item["id"],
@@ -341,11 +346,15 @@ def search_books(query: str) -> list:
     return results
 
 def fetch_book_ja_title(book_id: str) -> str:
-    """Google Books APIで日本語タイトルを取得"""
-    res = api_request("get", f"https://www.googleapis.com/books/v1/volumes/{book_id}")
-    if res is None or res.status_code != 200:
+    """Google Books APIで日本語タイトルを取得（urllib使用）"""
+    import urllib.request, json as _json
+    url = f"https://www.googleapis.com/books/v1/volumes/{book_id}"
+    try:
+        with urllib.request.urlopen(url, timeout=10) as r:
+            data = _json.loads(r.read().decode())
+        return data.get("volumeInfo", {}).get("title", "")
+    except Exception:
         return ""
-    return res.json().get("volumeInfo", {}).get("title", "")
 
 def fetch_tmdb_details(tmdb_id: int, media_type: str, season_number: int | None = None) -> dict:
     base      = "https://api.themoviedb.org/3"
@@ -548,7 +557,7 @@ def build_update_log(log_title, src, need_notion, notion_ok, need_drive, drive_o
 
 st.set_page_config(page_title="ArtéMis", page_icon="favicon.png", layout="wide")
 st.image("logo.png", width=320)
-st.caption("v1.51")
+st.caption("v1.52")
 
 for key, default in {
     "is_running":         False,
