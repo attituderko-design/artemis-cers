@@ -29,19 +29,18 @@ NOTION_HEADERS = {
 BOOTSTRAP_CDN = "https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.3/icons/{}.svg"
 
 MEDIA_ICON_MAP = {
-    "映画":          ("🎬 映画",          "camera-reels"),
-    "ドラマ":        ("📺 ドラマ",        "display"),
-    "演奏会":        ("🎻 演奏会",        "music-note-beamed"),
-    "展示会":        ("🖼️ 展示会",        "image"),
-    "ライブ/ショー": ("🎤 ライブ/ショー", "mic"),
-    "書籍":          ("📖 書籍",          "book"),
+    "映画":          ("🎬 映画",          "https://drive.google.com/uc?id=1cZAhzuXDdnTO2K3nPDjux9As008sa9gM"),
+    "ドラマ":        ("📺 ドラマ",        "https://drive.google.com/uc?id=10PcWDk4PLVdJHetcfsfN0j98dxUw2QgX"),
+    "演奏会":        ("🎻 演奏会",        "https://drive.google.com/uc?id=1qjtPgiX5ac0bshNMRflN4U0v-t181Nk9"),
+    "展示会":        ("🖼️ 展示会",        "https://drive.google.com/uc?id=1ZuyskBgvI0cfZmzelkog4qhzmzlbyYIy"),
+    "ライブ/ショー": ("🎤 ライブ/ショー", "https://drive.google.com/uc?id=1aD4cXTP4h9KZEb2v2z6k7NShqW8DqUbr"),
+    "書籍":          ("📖 書籍",          "https://drive.google.com/uc?id=1_PKbMmepX28j_t7ODcHek8rSO6irNRvv"),
 }
 
 RATING_OPTIONS = ["", "★", "★★", "★★★", "★★★★", "★★★★★"]
 
 def get_media_icon_url(media_label: str) -> str:
-    icon_name = MEDIA_ICON_MAP.get(media_label, ("", "camera-reels"))[1]
-    return BOOTSTRAP_CDN.format(icon_name)
+    return MEDIA_ICON_MAP.get(media_label, ("", ""))[1]
 
 # ============================================================
 # Google Drive API クライアント
@@ -423,6 +422,15 @@ def update_all(page_id, cover_url, tmdb_release, existing_release,
             tmdb_release = details_pre["season_air_date"]
 
     notion_ok = update_notion_cover(page_id, actual_cover_url, tmdb_release, existing_release) if need_notion else True
+    # アイコンを媒体に応じて更新
+    if props is not None:
+        media_labels = [m["name"] for m in props.get("媒体", {}).get("multi_select", [])]
+        media_label  = media_labels[0] if media_labels else None
+        icon_url     = get_media_icon_url(media_label) if media_label else None
+        if icon_url:
+            api_request("patch", f"https://api.notion.com/v1/pages/{page_id}",
+                        headers=NOTION_HEADERS,
+                        json={"icon": {"type": "external", "external": {"url": icon_url}}})
     drive_ok  = save_to_drive(actual_cover_url, title, tmdb_id) if need_drive else True
 
     if props is not None:
@@ -511,7 +519,7 @@ def build_update_log(log_title, src, need_notion, notion_ok, need_drive, drive_o
 # ============================================================
 
 st.set_page_config(page_title="ArtéMis", page_icon="🌙", layout="wide")
-st.title("🌙 ArtéMis v1.11")
+st.title("🌙 ArtéMis v1.2")
 
 for key, default in {
     "is_running":         False,
