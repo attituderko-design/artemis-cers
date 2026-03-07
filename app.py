@@ -278,6 +278,18 @@ def save_season_to_notion(page_id: str, season_number: int) -> bool:
     )
     return res is not None and res.status_code == 200
 
+def fetch_tmdb_ja_title(tmdb_id: int, media_type: str) -> str:
+    """TMDBから日本語タイトルを取得"""
+    res = api_request(
+        "get",
+        f"https://api.themoviedb.org/3/{media_type}/{tmdb_id}",
+        params={"api_key": TMDB_API_KEY, "language": "ja-JP"},
+    )
+    if res is None or res.status_code != 200:
+        return ""
+    data = res.json()
+    return data.get("title") or data.get("name") or ""
+
 def fetch_tmdb_by_id(tmdb_id: int, media_type: str) -> dict | None:
     res = api_request(
         "get",
@@ -499,7 +511,7 @@ def build_update_log(log_title, src, need_notion, notion_ok, need_drive, drive_o
 # ============================================================
 
 st.set_page_config(page_title="ArtéMis", page_icon="🌙", layout="wide")
-st.title("🌙 ArtéMis v1.1")
+st.title("🌙 ArtéMis v1.11")
 
 for key, default in {
     "is_running":         False,
@@ -675,13 +687,15 @@ if mode == "新規登録":
                     st.image(cover_url)
                     st.caption(f"{cand_en} ({media_type}) {tmdb_release} 🆔 {tmdb_id}")
                     if st.button("✅ これで登録", key=f"new_reg_{abs_idx}"):
+                        with st.spinner("日本語タイトル取得中..."):
+                            ja_title = fetch_tmdb_ja_title(tmdb_id, media_type)
                         st.session_state.confirm_reg = {
                             "tmdb_id":      tmdb_id,
                             "cover_url":    cover_url,
                             "tmdb_release": tmdb_release,
                             "media_type":   media_type,
                             "cand_en":      cand_en,
-                            "jp_input":     jp_input,
+                            "jp_input":     ja_title or jp_input,
                         }
                         st.rerun()
     st.stop()
