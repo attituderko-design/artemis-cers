@@ -405,6 +405,8 @@ def search_books(query: str) -> list:
         book_id = cand["title"]
         published = ""
 
+        url_rk = ""
+        
         if RAKUTEN_APP_ID:
             try:
                 rk_params = {
@@ -413,19 +415,14 @@ def search_books(query: str) -> list:
                     "hits": 1,
                     "formatVersion": 2,
                 }
-
-                # --- 修正③ author と publisherName を検索条件に追加 ---
-                if author_clean:
-                    rk_params["author"] = author_clean
-                if cand["publisher"]:
-                    rk_params["publisherName"] = cand["publisher"]
-                    
-                st.write("RK PARAMS", rk_params)
-                st.write("RK URL", url_rk) 
+                
                 url_rk = (
                     "https://app.rakuten.co.jp/services/api/BooksBook/Search/20170404?"
                     + urllib.parse.urlencode(rk_params)
                 )
+
+                st.write("RK PARAMS", rk_params)
+                st.write("RK URL", url_rk) 
 
                 req_rk = urllib.request.Request(url_rk, headers={"User-Agent": "ArteMis/1.0"})
                 with urllib.request.urlopen(req_rk, timeout=5) as r_rk:
@@ -435,7 +432,7 @@ def search_books(query: str) -> list:
                 st.write("RK COUNT", len(items_rk))
                 if items_rk:
                     st.write("RK RAW", items_rk[0])
-                    item = items_rk[0]
+                    item = items_rk[0]["Item"]
                     c = (
                         item.get("largeImageUrl")
                         or item.get("mediumImageUrl")
