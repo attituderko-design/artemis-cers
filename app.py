@@ -447,7 +447,7 @@ def search_books(query: str) -> list:
                     published = item.get("salesDate", "")[:4]
 
             except Exception:
-                pass
+                st.write("RAKUTEN ERROR", e)
 
         results.append({
             "id":        book_id,
