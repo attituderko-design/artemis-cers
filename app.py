@@ -379,7 +379,7 @@ def search_tmdb_by_person(person_query: str) -> list:
 
 
 def search_books(query: str, author: str = None) -> list:
-    """楽天ブックスAPIで書籍検索（タイトル直接検索）"""
+    """楽天ブックスAPIで書籍検索"""
     rk_params = {
         "applicationId": RAKUTEN_APP_ID,
         "accessKey":     st.secrets.get("RAKUTEN_ACCESS_KEY", ""),
@@ -388,33 +388,29 @@ def search_books(query: str, author: str = None) -> list:
         "sort":          "sales",
         "outOfStockFlag": 1,
     }
-    if query:
-        rk_params["title"] = query
-    if author:
-        rk_params["author"] = author
+    if query:  rk_params["title"]  = query
+    if author: rk_params["author"] = author
     rk_headers = {
         "Referer":       "https://notion-poster-sync-5wr4mgqdksey3z8tttbk9u.streamlit.app",
         "Origin":        "https://notion-poster-sync-5wr4mgqdksey3z8tttbk9u.streamlit.app",
         "User-Agent":    "Mozilla/5.0",
         "Authorization": f"Bearer {st.secrets.get('RAKUTEN_ACCESS_KEY', '')}",
     }
-    url_rk = "https://openapi.rakuten.co.jp/services/api/BooksBook/Search/20170404?" + _up.urlencode(rk_params)
     try:
-        res_rk = requests.get(url_rk, timeout=8, headers=rk_headers)
+        res = requests.get(
+            "https://openapi.rakuten.co.jp/services/api/BooksBook/Search/20170404",
+            params=rk_params, headers=rk_headers, timeout=8,
+        )
     except Exception as e:
         st.warning(f"⚠️ 楽天ブックスAPI エラー: {e}")
         return []
-
-    if res_rk.status_code != 200:
-        st.warning(f"⚠️ 楽天ブックスAPI {res_rk.status_code}: {res_rk.text[:200]}")
+    if res.status_code != 200:
+        st.warning(f"⚠️ 楽天ブックスAPI {res.status_code}: {res.text[:200]}")
         return []
-
-    items = res_rk.json().get("Items", [])
     results = []
-    for item in items:
+    for item in res.json().get("Items", []):
         cover = item.get("largeImageUrl") or item.get("mediumImageUrl") or item.get("smallImageUrl", "")
         cover = cover.replace("http://", "https://") if cover else ""
-        # 著者名から接尾語を除去
         raw_authors = [a.strip() for a in (item.get("author", "") or "").split("/") if a.strip()]
         authors = [clean_author(a) for a in raw_authors]
         isbn_val = item.get("isbn", "")
@@ -547,10 +543,9 @@ def fetch_itunes_tracks(collection_id: int) -> list:
 # 漫画（楽天ブックス コミックジャンル）
 # ============================================================
 def search_manga(query: str, author: str = None) -> list:
-    access_key = st.secrets.get("RAKUTEN_ACCESS_KEY", "")
     rk_params = {
         "applicationId": RAKUTEN_APP_ID,
-        "accessKey":     access_key,
+        "accessKey":     st.secrets.get("RAKUTEN_ACCESS_KEY", ""),
         "booksGenreId":  "001001",   # コミック・ラノベ
         "hits":          20,
         "formatVersion": 2,
@@ -563,13 +558,18 @@ def search_manga(query: str, author: str = None) -> list:
         "Referer":       "https://notion-poster-sync-5wr4mgqdksey3z8tttbk9u.streamlit.app",
         "Origin":        "https://notion-poster-sync-5wr4mgqdksey3z8tttbk9u.streamlit.app",
         "User-Agent":    "Mozilla/5.0",
-        "Authorization": f"Bearer {access_key}",
+        "Authorization": f"Bearer {st.secrets.get('RAKUTEN_ACCESS_KEY', '')}",
     }
-    res = requests.get(
-        "https://openapi.rakuten.co.jp/services/api/BooksBook/Search/20170404",
-        params=rk_params, headers=rk_headers,
-    )
+    try:
+        res = requests.get(
+            "https://openapi.rakuten.co.jp/services/api/BooksBook/Search/20170404",
+            params=rk_params, headers=rk_headers, timeout=8,
+        )
+    except Exception as e:
+        st.warning(f"⚠️ 楽天ブックスAPI エラー: {e}")
+        return []
     if res.status_code != 200:
+        st.warning(f"⚠️ 楽天ブックスAPI {res.status_code}: {res.text[:200]}")
         return []
     results = []
     seen = set()
@@ -827,7 +827,7 @@ def build_update_log(log_title, src, need_notion, notion_ok, need_drive, drive_o
 
 st.set_page_config(page_title="ArtéMis", page_icon="favicon.png", layout="wide")
 st.image("logo.png", width=320)
-st.caption("v2.01")
+st.caption("v2.03")
 
 for key, default in {
     "is_running":         False,
