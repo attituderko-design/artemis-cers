@@ -332,6 +332,7 @@ def search_books(query: str) -> list:
         req = urllib.request.Request(url, headers={"User-Agent": "ArteMis/1.0"})
         with urllib.request.urlopen(req, timeout=10) as r:
             xml_data = r.read().decode("utf-8")
+        st.caption(f"📡 NDL API OK: {len(xml_data)}bytes, records={xml_data.count('<record>')}")
     except Exception as e:
         st.warning(f"⚠️ 国立国会図書館API エラー: {e}")
         return []
@@ -382,6 +383,7 @@ def search_books(query: str) -> list:
         if len(book_candidates) >= 10:
             break
 
+    st.caption(f"📚 NDL候補: {len(book_candidates)}件")
     if not book_candidates:
         return []
 
@@ -629,7 +631,7 @@ def build_update_log(log_title, src, need_notion, notion_ok, need_drive, drive_o
 
 st.set_page_config(page_title="ArtéMis", page_icon="favicon.png", layout="wide")
 st.image("logo.png", width=320)
-st.caption("v1.57")
+st.caption("v1.58")
 
 for key, default in {
     "is_running":         False,
