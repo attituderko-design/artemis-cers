@@ -607,7 +607,16 @@ def create_notion_page(jp_title: str, en_title: str, media_type_label: str,
     if cover_url:
         payload["cover"] = {"type": "external", "external": {"url": cover_url}}
     res = api_request("post", "https://api.notion.com/v1/pages", headers=NOTION_HEADERS, json=payload)
-    return res is not None and res.status_code == 200
+    if res is None:
+        return False
+    if res.status_code != 200:
+        try:
+            err = res.json()
+            st.error(f"Notion API エラー {res.status_code}: {err.get('message','')}\ncode: {err.get('code','')}")
+        except Exception:
+            st.error(f"Notion API エラー {res.status_code}: {res.text[:300]}")
+        return False
+    return True
 
 def check_duplicate(tmdb_id: int, pages: list) -> list:
     """TMDB_IDが一致する既存ページを返す"""
@@ -633,7 +642,7 @@ def build_update_log(log_title, src, need_notion, notion_ok, need_drive, drive_o
 
 st.set_page_config(page_title="ArtéMis", page_icon="favicon.png", layout="wide")
 st.image("logo.png", width=320)
-st.caption("v1.81")
+st.caption("v1.82")
 
 for key, default in {
     "is_running":         False,
