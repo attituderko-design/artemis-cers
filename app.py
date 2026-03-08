@@ -14,7 +14,8 @@ import io
 # ============================================================
 NOTION_API_KEY  = st.secrets["NOTION_API_KEY"]
 NOTION_DB_ID    = st.secrets["NOTION_DB_ID"]
-TMDB_API_KEY    = st.secrets["TMDB_API_KEY"]
+TMDB_API_KEY         = st.secrets["TMDB_API_KEY"]
+GOOGLE_BOOKS_API_KEY = st.secrets["GOOGLE_BOOKS_API_KEY"]
 DRIVE_FOLDER_ID = st.secrets["DRIVE_FOLDER_ID"]
 
 NOTION_HEADERS = {
@@ -316,7 +317,7 @@ def search_tmdb(query: str, year=None) -> list:
 def search_books(query: str) -> list:
     """Google Books APIで書籍検索（urllib使用）"""
     import urllib.request, urllib.parse, json as _json
-    params = urllib.parse.urlencode({"q": query, "maxResults": 10})
+    params = urllib.parse.urlencode({"q": query, "maxResults": 10, "key": GOOGLE_BOOKS_API_KEY})
     url = f"https://www.googleapis.com/books/v1/volumes?{params}"
     try:
         with urllib.request.urlopen(url, timeout=10) as r:
