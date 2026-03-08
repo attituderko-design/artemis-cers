@@ -415,8 +415,6 @@ def search_books(query: str) -> list:
         published = ""
         if RAKUTEN_APP_ID:
             try:
-                # titleパラメータは400になりやすいのでkeywordを使う
-                # authorは同時指定すると400になるケースがあるため省略
                 rk_params = {
                     "applicationId": RAKUTEN_APP_ID,
                     "keyword": title_clean,
@@ -425,18 +423,23 @@ def search_books(query: str) -> list:
                     "sort": "sales",
                 }
                 url_rk = f"https://app.rakuten.co.jp/services/api/BooksBook/Search/20170404?{urllib.parse.urlencode(rk_params)}"
-                req_rk = urllib.request.Request(url_rk, headers={"User-Agent": "ArteMis/1.0"})
-                with urllib.request.urlopen(req_rk, timeout=5) as r_rk:
-                    rk_data = _json.loads(r_rk.read().decode())
-                items_rk = rk_data.get("Items", [])
-                if items_rk:
-                    raw = items_rk[0]
-                    item = raw.get("Item", raw)
-                    c = item.get("largeImageUrl") or item.get("mediumImageUrl") or item.get("smallImageUrl", "")
-                    if c:
-                        cover = c.replace("http://", "https://")
-                    book_id = item.get("isbn") or cand["title"]
-                    published = item.get("salesDate", "")[:4]
+                st.caption(f"🔍 楽天URL: `{url_rk}`")
+                res_rk = requests.get(url_rk, timeout=5)
+                st.caption(f"ステータス: {res_rk.status_code}")
+                if res_rk.status_code == 200:
+                    rk_data = res_rk.json()
+                    items_rk = rk_data.get("Items", [])
+                    st.caption(f"ヒット件数: {len(items_rk)}")
+                    if items_rk:
+                        raw = items_rk[0]
+                        item = raw.get("Item", raw)
+                        c = item.get("largeImageUrl") or item.get("mediumImageUrl") or item.get("smallImageUrl", "")
+                        if c:
+                            cover = c.replace("http://", "https://")
+                        book_id = item.get("isbn") or cand["title"]
+                        published = item.get("salesDate", "")[:4]
+                else:
+                    st.caption(f"🔴 楽天API {res_rk.status_code}: {res_rk.text[:200]}")
             except Exception as _rk_e:
                 st.caption(f"🔴 楽天API例外: {_rk_e}")
 
