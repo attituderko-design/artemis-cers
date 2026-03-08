@@ -595,8 +595,9 @@ def create_notion_page(jp_title: str, en_title: str, media_type_label: str,
         properties["TMDB_score"] = {"number": details["score"]}
     if isbn:
         properties["ISBN"] = {"rich_text": [{"type": "text", "text": {"content": isbn}}]}
-    if location:
-        properties["ロケーション"] = {"rich_text": [{"type": "text", "text": {"content": location}}]}
+    # ロケーションはNotionのフィールド型に応じて要調整
+    # if location:
+    #     properties["ロケーション"] = {"rich_text": [{"type": "text", "text": {"content": location}}]}
 
     icon_url = get_media_icon_url(media_type_label)
     payload = {
@@ -642,7 +643,7 @@ def build_update_log(log_title, src, need_notion, notion_ok, need_drive, drive_o
 
 st.set_page_config(page_title="ArtéMis", page_icon="favicon.png", layout="wide")
 st.image("logo.png", width=320)
-st.caption("v1.82")
+st.caption("v1.84")
 
 for key, default in {
     "is_running":         False,
@@ -746,12 +747,12 @@ if mode == "新規登録":
         event_title = st.text_input("公演名 / 展示名 *", placeholder="例: 大阪フィルハーモニー交響楽団 第588回定期演奏会")
 
         # ロケーション・クリエイター
-        col_loc, col_creator = st.columns([1, 1])
-        event_location = col_loc.text_input("会場", placeholder="例: フェスティバルホール")
-        event_creator  = col_creator.text_input(
+        st.caption("📍 ロケーション情報はNotion上で入力してください。")
+        event_creator = st.text_input(
             "クリエイター",
             placeholder="例: 指揮者・キュレーターなど",
         )
+        event_location = None
 
         # 出演者・ジャンル
         col_cast, col_genre = st.columns([1, 1])
