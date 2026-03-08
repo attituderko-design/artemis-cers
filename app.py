@@ -406,7 +406,8 @@ def search_books(query: str) -> list:
     if not book_candidates:
         return []
 
-    # Google Books APIでカバー画像を取得（タイトル検索・認証不要）
+
+    # 楽天ブックスAPIでカバー画像を取得
     results = []
     for cand in book_candidates:
         cover = ""
@@ -422,39 +423,47 @@ def search_books(query: str) -> list:
         title_clean = title_clean[:40]
 
         try:
-            q = f"isbn:{cand['isbn']}" if cand["isbn"] else f"intitle:{title_clean}"
-            res_gb = requests.get(
-                "https://www.googleapis.com/books/v1/volumes",
-                params={"q": q, "langRestrict": "ja", "maxResults": 1},
-                timeout=5,
-            )
-            if res_gb.status_code == 200:
-                items_gb = res_gb.json().get("items", [])
-                if items_gb:
-                    vi = items_gb[0].get("volumeInfo", {})
-                    img = vi.get("imageLinks", {})
-                    c = img.get("thumbnail") or img.get("smallThumbnail", "")
+            rk_params = {
+                "applicationId": RAKUTEN_APP_ID,
+                "affiliateId":   st.secrets.get("RAKUTEN_AFFILIATE_ID", ""),
+                "keyword":       title_clean,
+                "hits":          3,
+                "formatVersion": 2,
+                "sort":          "sales",
+            }
+            # 空のaffiliate_idは除去
+            if not rk_params["affiliateId"]:
+                del rk_params["affiliateId"]
+            import urllib.parse as _up
+            url_rk = "https://app.rakuten.co.jp/services/api/BooksBook/Search/20170404?" + _up.urlencode(rk_params)
+            res_rk = requests.get(url_rk, timeout=5)
+            if res_rk.status_code == 200:
+                items_rk = res_rk.json().get("Items", [])
+                if items_rk:
+                    raw  = items_rk[0]
+                    item = raw.get("Item", raw)
+                    c = item.get("largeImageUrl") or item.get("mediumImageUrl") or item.get("smallImageUrl", "")
                     if c:
-                        cover = c.replace("http://", "https://").replace("zoom=1", "zoom=2")
-                    pub_date = vi.get("publishedDate", "")
-                    published = pub_date[:4] if pub_date else ""
-                    isbn_list = [i["identifier"] for i in vi.get("industryIdentifiers", []) if "ISBN" in i.get("type","")]
-                    if isbn_list:
-                        book_id = _re.sub(r"[^0-9]", "", isbn_list[-1])
-        except Exception:
-            pass
+                        cover = c.replace("http://", "https://")
+                    book_id   = item.get("isbn") or cand["title"]
+                    published = item.get("salesDate", "")[:4]
+            else:
+                st.caption(f"🔴 楽天API {res_rk.status_code}: {res_rk.text[:200]}")
+        except Exception as _e:
+            st.caption(f"🔴 楽天例外: {_e}")
 
         results.append({
-            "id":        book_id,
-            "title":     cand["title"],
-            "authors":   cand["authors"],
-            "publisher": cand["publisher"],
-            "published": published,
-            "genres":    [],
-            "cover_url": cover,
+            "id":         book_id,
+            "title":      cand["title"],
+            "authors":    cand["authors"],
+            "publisher":  cand["publisher"],
+            "published":  published,
+            "genres":     [],
+            "cover_url":  cover,
             "media_type": "book",
         })
     return results
+
 
 
 
