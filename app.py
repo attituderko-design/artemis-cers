@@ -383,6 +383,13 @@ def search_books(query: str) -> list:
         if len(book_candidates) >= 10:
             break
 
+    # 最初のブロックの中身をデバッグ表示
+    if record_blocks:
+        rd_m = __import__("re").search(r'<recordData>(.*?)</recordData>', record_blocks[0], __import__("re").DOTALL)
+        if rd_m:
+            st.caption(f"🔍 block0: {rd_m.group(1)[:300]}")
+        else:
+            st.caption(f"🔍 block0 raw: {record_blocks[0][:300]}")
     st.caption(f"📚 NDL候補: {len(book_candidates)}件")
     if not book_candidates:
         return []
