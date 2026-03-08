@@ -415,21 +415,21 @@ def search_books(query: str) -> list:
         published = ""
         if RAKUTEN_APP_ID:
             try:
+                # titleパラメータは400になりやすいのでkeywordを使う
+                # authorは同時指定すると400になるケースがあるため省略
                 rk_params = {
                     "applicationId": RAKUTEN_APP_ID,
-                    "title": title_clean,
-                    "hits": 1,
+                    "keyword": title_clean,
+                    "hits": 3,
                     "formatVersion": 2,
+                    "sort": "sales",
                 }
-                if author_clean:
-                    rk_params["author"] = author_clean
                 url_rk = f"https://app.rakuten.co.jp/services/api/BooksBook/Search/20170404?{urllib.parse.urlencode(rk_params)}"
                 req_rk = urllib.request.Request(url_rk, headers={"User-Agent": "ArteMis/1.0"})
                 with urllib.request.urlopen(req_rk, timeout=5) as r_rk:
                     rk_data = _json.loads(r_rk.read().decode())
                 items_rk = rk_data.get("Items", [])
                 if items_rk:
-                    # formatVersion=2 の場合はItems[0]が直接dictだが念のため両方対応
                     raw = items_rk[0]
                     item = raw.get("Item", raw)
                     c = item.get("largeImageUrl") or item.get("mediumImageUrl") or item.get("smallImageUrl", "")
