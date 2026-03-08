@@ -39,9 +39,9 @@ MEDIA_ICON_MAP = {
     "展示会":        ("🖼️ 展示会",        "https://raw.githubusercontent.com/attituderko-design/notion-poster-sync/refs/heads/main/image.svg"),
     "ライブ/ショー": ("🎤 ライブ/ショー", "https://raw.githubusercontent.com/attituderko-design/notion-poster-sync/refs/heads/main/mic.svg"),
     "書籍":          ("📖 書籍",          "https://raw.githubusercontent.com/attituderko-design/notion-poster-sync/refs/heads/main/book.svg"),
-    "漫画":          ("📚 漫画",          "https://raw.githubusercontent.com/attituderko-design/notion-poster-sync/refs/heads/main/book.svg"),
-    "音楽アルバム":  ("🎵 音楽アルバム",  "https://raw.githubusercontent.com/attituderko-design/notion-poster-sync/refs/heads/main/music-note-beamed.svg"),
-    "ゲーム":        ("🎮 ゲーム",        BOOTSTRAP_CDN.format("controller")),
+    "漫画":          ("📚 漫画",          "https://raw.githubusercontent.com/attituderko-design/notion-poster-sync/refs/heads/main/book-manga.svg"),
+    "音楽アルバム":  ("🎵 音楽アルバム",  "https://raw.githubusercontent.com/attituderko-design/notion-poster-sync/refs/heads/main/disc.svg"),
+    "ゲーム":        ("🎮 ゲーム",        "https://raw.githubusercontent.com/attituderko-design/notion-poster-sync/refs/heads/main/controller.svg"),
 }
 
 RATING_OPTIONS = ["", "★", "★★", "★★★", "★★★★", "★★★★★"]
@@ -827,7 +827,7 @@ def build_update_log(log_title, src, need_notion, notion_ok, need_drive, drive_o
 
 st.set_page_config(page_title="ArtéMis", page_icon="favicon.png", layout="wide")
 st.image("logo.png", width=320)
-st.caption("v1.93")
+st.caption("v1.95")
 
 for key, default in {
     "is_running":         False,
@@ -1457,24 +1457,50 @@ if mode == "自動同期" and st.session_state.is_running:
                 for m in props.get("媒体", {}).get("multi_select", [])
             )
             if is_refresh and not is_movie_drama:
-                # 映画・ドラマ以外: アイコン更新 + クリエイター名正規化（ISBN有りのみ）
-                media_labels = [m["name"] for m in props.get("媒体", {}).get("multi_select", [])]
+                # 映画・ドラマ以外: アイコン更新 + 媒体別の追加処理
+                media_labels    = [m["name"] for m in props.get("媒体", {}).get("multi_select", [])]
                 media_label_val = media_labels[0] if media_labels else None
-                icon_url = get_media_icon_url(media_label_val) if media_label_val else None
-                patch_body = {}
+                icon_url        = get_media_icon_url(media_label_val) if media_label_val else None
+                patch_body      = {}
                 if icon_url:
                     patch_body["icon"] = {"type": "external", "external": {"url": icon_url}}
 
-                # ISBNが存在する書籍はクリエイター名を正規化
-                isbn_val = "".join(t["plain_text"] for t in props.get("ISBN", {}).get("rich_text", []))
-                if isbn_val:
-                    raw_creator = "".join(t["plain_text"] for t in props.get("クリエイター", {}).get("rich_text", []))
-                    if raw_creator:
-                        cleaned = " / ".join(clean_author(a) for a in raw_creator.split("/") if a.strip())
-                        if cleaned != raw_creator:
-                            patch_body.setdefault("properties", {})["クリエイター"] = {
-                                "rich_text": [{"type": "text", "text": {"content": cleaned}}]
-                            }
+                # クリエイター名正規化（書籍・漫画・音楽・ゲーム共通）
+                if media_label_val in ("書籍", "漫画", "音楽アルバム", "ゲーム"):
+                    # 書籍はISBNがある場合のみ、それ以外は無条件
+                    isbn_val = "".join(t["plain_text"] for t in props.get("ISBN", {}).get("rich_text", []))
+                    should_normalize = (media_label_val != "書籍") or bool(isbn_val)
+                    if should_normalize:
+                        raw_creator = "".join(t["plain_text"] for t in props.get("クリエイター", {}).get("rich_text", []))
+                        if raw_creator:
+                            cleaned = " / ".join(clean_author(a) for a in raw_creator.split("/") if a.strip())
+                            if cleaned != raw_creator:
+                                patch_body.setdefault("properties", {})["クリエイター"] = {
+                                    "rich_text": [{"type": "text", "text": {"content": cleaned}}]
+                                }
+
+                # 音楽アルバム: iTunesからカバー再取得
+                if media_label_val == "音楽アルバム":
+                    title_str = "".join(t["plain_text"] for t in props.get("タイトル", {}).get("title", []))
+                    artist_str = "".join(t["plain_text"] for t in props.get("クリエイター", {}).get("rich_text", []))
+                    if title_str:
+                        albums = search_albums(title_str, artist=artist_str or None)
+                        if albums:
+                            new_cover = albums[0]["cover_url"]
+                            if new_cover:
+                                patch_body["cover"] = {"type": "external", "external": {"url": new_cover}}
+
+                # ゲーム: IGDBからカバー再取得
+                elif media_label_val == "ゲーム":
+                    en_title = "".join(t["plain_text"] for t in props.get("International Title", {}).get("rich_text", []))
+                    jp_title = "".join(t["plain_text"] for t in props.get("タイトル", {}).get("title", []))
+                    query_str = en_title or jp_title
+                    if query_str:
+                        games = search_games(query_str)
+                        if games:
+                            new_cover = games[0]["cover_url"]
+                            if new_cover:
+                                patch_body["cover"] = {"type": "external", "external": {"url": new_cover}}
 
                 if patch_body:
                     api_request("patch", f"https://api.notion.com/v1/pages/{item['id']}",
