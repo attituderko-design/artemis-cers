@@ -399,7 +399,7 @@ def search_books(query: str) -> list:
             author_clean = _re.sub(r'[∥\s]*(著|訳|編|著者|作).*', '', cand["authors"][0]).strip()
 
         # --- 修正① タイトルのクリーニング ---
-        title_clean = _re.sub(r"[ :：／/].*", "", cand["title"]).strip()
+        title_clean = cand["title"].split(":")[0].split("：")[0].split("/")[0].strip()
 
         cover = ""
         book_id = cand["title"]
@@ -411,7 +411,7 @@ def search_books(query: str) -> list:
             try:
                 rk_params = {
                     "applicationId": RAKUTEN_APP_ID,
-                    "title": title_clean,  # ← 修正② クリーンタイトルを使用
+                    "keyword": title_clean,
                     "hits": 1,
                     "formatVersion": 2,
                 }
