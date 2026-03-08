@@ -322,8 +322,8 @@ def search_books(query: str) -> list:
 
     params = urllib.parse.urlencode({
         "operation": "searchRetrieve",
-        "query": f'title any "{query}"',
-        "recordSchema": "dc",
+        "query": f'title any "{query}" AND mediatype exact "Book"',
+        "recordSchema": "dcndl",
         "maximumRecords": 50,
         "recordPacking": "xml",
     })
@@ -338,9 +338,10 @@ def search_books(query: str) -> list:
 
     # XML名前空間
     ns = {
-        "srw": "http://www.loc.gov/zing/srw/",
-        "dc":  "http://purl.org/dc/elements/1.1/",
+        "srw":   "http://www.loc.gov/zing/srw/",
+        "dc":    "http://purl.org/dc/elements/1.1/",
         "dcndl": "http://ndl.go.jp/dcndl/terms/",
+        "rdfs":  "http://www.w3.org/2000/01/rdf-schema#",
     }
 
     try:
@@ -351,23 +352,16 @@ def search_books(query: str) -> list:
 
     records = root.findall(".//srw:record", ns)
 
-    SKIP_KEYWORDS = ["録音資料", "映像資料", "楽譜", "type : article", "[録音", "[映像", "[楽譜"]
-
     seen_titles = set()
     book_candidates = []
 
     for record in records:
-        # recordDataの中のXMLを文字列として取得
         rd_el = record.find("srw:recordData", ns)
         if rd_el is None:
             continue
         rd_text = ET.tostring(rd_el, encoding="unicode")
 
-        # 不要なメディア除外
-        if any(kw in rd_text for kw in SKIP_KEYWORDS):
-            continue
-
-        # dc:title を ET で取得（名前空間付き）
+        # dc:title
         title_el = rd_el.find(".//{http://purl.org/dc/elements/1.1/}title")
         if title_el is None or not title_el.text:
             continue
@@ -383,26 +377,21 @@ def search_books(query: str) -> list:
         pub_el = rd_el.find(".//{http://purl.org/dc/elements/1.1/}publisher")
         publisher = pub_el.text.strip() if pub_el is not None and pub_el.text else ""
 
-        # dc:identifier からISBNを取得
+        # ISBN取得: dcndl:ISBN / dc:identifier から探す
         isbn = ""
-        _all_ids = []
-        for id_el in rd_el.findall(".//{http://purl.org/dc/elements/1.1/}identifier"):
-            _all_ids.append(id_el.text or "")
-            val = (id_el.text or "").strip()
-            # ハイフン・スペース除去・プレフィックス除去
-            val_clean = _re.sub(r"[^0-9X]", "", val.upper())
-            if _re.match(r"^97[89]\d{10}$", val_clean) or _re.match(r"^\d{10}$", val_clean):
-                isbn = val_clean
+        if len(book_candidates) == 0:
+            st.code(rd_text[:2000], language="xml")
+        for tag in [
+            "{http://ndl.go.jp/dcndl/terms/}ISBN",
+            "{http://purl.org/dc/elements/1.1/}identifier",
+        ]:
+            for el in rd_el.findall(f".//{tag}"):
+                val = _re.sub(r"[^0-9]", "", (el.text or ""))
+                if _re.match(r"^97[89]\d{10}$", val) or _re.match(r"^\d{10}$", val):
+                    isbn = val
+                    break
+            if isbn:
                 break
-            # "978-..." や "ISBN978-..." 形式も対応
-            m = _re.search(r"97[89][\d\-]{10,}", val)
-            if m:
-                isbn = _re.sub(r"[^0-9]", "", m.group())[:13]
-                break
-        if len(book_candidates) == 0:  # 最初の1件だけ生XML表示
-            st.code(ET.tostring(rd_el, encoding="unicode")[:2000], language="xml")
-        if len(book_candidates) < 2:
-            st.caption(f"🔎 identifiers: {_all_ids} → ISBN: {isbn or 'なし'}")
 
         seen_titles.add(title)
         book_candidates.append({
