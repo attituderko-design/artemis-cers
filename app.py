@@ -417,14 +417,19 @@ def search_books(query: str) -> list:
                 }
                 
                 url_rk = (
-                    "https://app.rakuten.co.jp/services/api/BooksBook/Search/20170404?"
+                    "https://openapi.rakuten.co.jp/ichibams/api/BooksBook/Search/20220601?"
                     + urllib.parse.urlencode(rk_params)
                 )
 
                 st.write("RK PARAMS", rk_params)
                 st.write("RK URL", url_rk) 
 
-                req_rk = urllib.request.Request(url_rk, headers={"User-Agent": "ArteMis/1.0"})
+                headers = {
+                    "User-Agent": "ArteMis/1.0",
+                    "Origin": "https://notion-poster-sync-5wr4mgqdksey3z8tttbk9u.streamlit.app"
+                }
+
+                req_rk = urllib.request.Request(url_rk, headers=headers)
                 with urllib.request.urlopen(req_rk, timeout=5) as r_rk:
                     rk_data = _json.loads(r_rk.read().decode())
 
