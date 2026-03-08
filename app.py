@@ -532,7 +532,25 @@ def search_albums(query: str, artist: str = None) -> list:
 # ============================================================
 # 漫画（楽天ブックス コミックジャンル）
 # ============================================================
-def search_manga(query: str, author: str = None) -> list:
+def fetch_itunes_tracks(collection_id: int) -> list:
+    """iTunesのアルバムIDからトラックリストを取得"""
+    res = requests.get(
+        "https://itunes.apple.com/lookup",
+        params={"id": collection_id, "entity": "song", "country": "JP", "lang": "ja_jp"},
+        headers={"User-Agent": "ArteMis/1.0"},
+    )
+    if res.status_code != 200:
+        return []
+    tracks = []
+    for item in res.json().get("results", []):
+        if item.get("wrapperType") == "track":
+            tracks.append({
+                "no":   item.get("trackNumber", 0),
+                "name": item.get("trackName", ""),
+            })
+    return sorted(tracks, key=lambda x: x["no"])
+
+
     access_key = st.secrets.get("RAKUTEN_ACCESS_KEY", "")
     rk_params = {
         "applicationId": RAKUTEN_APP_ID,
@@ -728,7 +746,8 @@ def create_notion_page(jp_title: str, en_title: str, media_type_label: str,
                        rating: str | None = None,
                        isbn: str | None = None,
                        location: str | None = None,
-                       event_end: str | None = None) -> bool:
+                       event_end: str | None = None,
+                       memo: str | None = None) -> bool:
     """Notionに新規ページを作成してポスター・メタデータも一括登録"""
     properties = {
         "タイトル":            {"title": [{"type": "text", "text": {"content": jp_title}}]},
@@ -758,6 +777,8 @@ def create_notion_page(jp_title: str, en_title: str, media_type_label: str,
         properties["TMDB_score"] = {"number": details["score"]}
     if isbn:
         properties["ISBN"] = {"rich_text": [{"type": "text", "text": {"content": isbn}}]}
+    if memo:
+        properties["メモ"] = {"rich_text": [{"type": "text", "text": {"content": memo}}]}
     # ロケーションはNotionのフィールド型に応じて要調整
     # if location:
     #     properties["ロケーション"] = {"rich_text": [{"type": "text", "text": {"content": location}}]}
@@ -806,7 +827,7 @@ def build_update_log(log_title, src, need_notion, notion_ok, need_drive, drive_o
 
 st.set_page_config(page_title="ArtéMis", page_icon="favicon.png", layout="wide")
 st.image("logo.png", width=320)
-st.caption("v1.91")
+st.caption("v1.93")
 
 for key, default in {
     "is_running":         False,
@@ -1059,8 +1080,29 @@ if mode == "新規登録":
             final_en = st.text_input("英語タイトル（修正可）",   value=reg["cand_en"],                key="final_en")
             if media_label == "書籍":
                 final_isbn = st.text_input("ISBN", value=reg.get("isbn", ""), key="final_isbn")
+            elif media_label == "漫画":
+                final_isbn = st.text_input("ISBN", value=reg.get("isbn", ""), key="final_isbn")
             else:
                 final_isbn = None
+
+            # 音楽アルバム: トラックリスト
+            include_tracks = False
+            tracks_text    = ""
+            if media_label == "音楽アルバム" and reg.get("tmdb_id") == 0:
+                collection_id = reg.get("itunes_id", 0)
+                if collection_id:
+                    if "album_tracks_cache" not in st.session_state or st.session_state.get("album_tracks_id") != collection_id:
+                        with st.spinner("トラックリスト取得中..."):
+                            tracks = fetch_itunes_tracks(collection_id)
+                            st.session_state.album_tracks_cache = tracks
+                            st.session_state.album_tracks_id    = collection_id
+                    else:
+                        tracks = st.session_state.album_tracks_cache
+                    if tracks:
+                        tracks_text    = "\n".join(f"{t['no']}. {t['name']}" for t in tracks)
+                        include_tracks = st.checkbox("トラックリストをメモに追加", value=True, key="include_tracks")
+                        if include_tracks:
+                            st.caption(tracks_text)
 
             # 重複チェック
             if not st.session_state.pages_loaded:
@@ -1103,6 +1145,12 @@ if mode == "新規登録":
                         details = fetch_tmdb_details(reg["tmdb_id"], reg["media_type"])
                     watched_str  = watched_date.isoformat() if watched_date else None
                     page_tmdb_id = 0 if reg["media_type"] not in ("movie", "tv") else reg["tmdb_id"]
+                    # アルバムのトラックリストをメモに
+                    memo_text = None
+                    if reg["media_type"] == "album" and st.session_state.get("include_tracks", False):
+                        tracks = st.session_state.get("album_tracks_cache", [])
+                        if tracks:
+                            memo_text = "\n".join(f"{t['no']}. {t['name']}" for t in tracks)
                     ok = create_notion_page(
                         jp_title=final_jp,
                         en_title=final_en,
@@ -1116,6 +1164,7 @@ if mode == "新規登録":
                         watched_date=watched_str,
                         rating=rating_sel if rating_sel else None,
                         isbn=final_isbn or None,
+                        memo=memo_text,
                     )
                     st.session_state.registering = False
                     if ok:
@@ -1213,11 +1262,12 @@ if mode == "新規登録":
                         elif media_label == "音楽アルバム":
                             st.session_state.confirm_reg = {
                                 "tmdb_id":      0,
+                                "itunes_id":    cand["id"],
                                 "cover_url":    cand["cover_url"],
                                 "tmdb_release": cand.get("release", ""),
                                 "media_type":   "album",
-                                "cand_en":      "",
-                                "jp_input":     cand["title"],
+                                "cand_en":      cand["title"],
+                                "jp_input":     "",
                                 "book_authors": [cand.get("artist", "")],
                                 "book_genres":  [],
                                 "isbn":         "",
