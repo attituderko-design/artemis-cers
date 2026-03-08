@@ -30,8 +30,6 @@ NOTION_HEADERS = {
 # ============================================================
 # 媒体マッピング
 # ============================================================
-BOOTSTRAP_CDN = "https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.3/icons/{}.svg"
-
 MEDIA_ICON_MAP = {
     "映画":          ("🎬 映画",          "https://raw.githubusercontent.com/attituderko-design/notion-poster-sync/refs/heads/main/camera-reels.svg"),
     "ドラマ":        ("📺 ドラマ",        "https://raw.githubusercontent.com/attituderko-design/notion-poster-sync/refs/heads/main/display.svg"),
@@ -382,8 +380,6 @@ def search_tmdb_by_person(person_query: str) -> list:
 
 def search_books(query: str, author: str = None) -> list:
     """楽天ブックスAPIで書籍検索（タイトル直接検索）"""
-    import urllib.parse as _up, re as _re
-
     rk_params = {
         "applicationId": RAKUTEN_APP_ID,
         "accessKey":     st.secrets.get("RAKUTEN_ACCESS_KEY", ""),
@@ -435,9 +431,6 @@ def search_books(query: str, author: str = None) -> list:
         })
     return results
 
-
-def fetch_book_ja_title(book_id: str) -> str:
-    return book_id
 
 # ============================================================
 # IGDB（ゲーム）
@@ -550,7 +543,10 @@ def fetch_itunes_tracks(collection_id: int) -> list:
             })
     return sorted(tracks, key=lambda x: x["no"])
 
-
+# ============================================================
+# 漫画（楽天ブックス コミックジャンル）
+# ============================================================
+def search_manga(query: str, author: str = None) -> list:
     access_key = st.secrets.get("RAKUTEN_ACCESS_KEY", "")
     rk_params = {
         "applicationId": RAKUTEN_APP_ID,
@@ -600,6 +596,10 @@ def fetch_itunes_tracks(collection_id: int) -> list:
     return results
 
 
+# ============================================================
+# TMDB詳細取得
+# ============================================================
+def fetch_tmdb_details(tmdb_id: int, media_type: str, season_number: int | None = None) -> dict:
     base      = "https://api.themoviedb.org/3"
     params_ja = {"api_key": TMDB_API_KEY, "language": "ja-JP"}
     params_en = {"api_key": TMDB_API_KEY, "language": "en-US"}
@@ -754,7 +754,7 @@ def create_notion_page(jp_title: str, en_title: str, media_type_label: str,
         "International Title": {"rich_text": [{"type": "text", "text": {"content": en_title}, "annotations": {"italic": True}}]},
         "媒体":               {"multi_select": [{"name": media_type_label}]},
         **({"TMDB_ID": {"number": tmdb_id}} if tmdb_id else {}),
-        **({"MEDIA_TYPE": {"multi_select": [{"name": media_type}]}} if media_type and media_type not in ("book",) else {}),
+        **({"MEDIA_TYPE": {"multi_select": [{"name": media_type}]}} if media_type and media_type not in ("book", "manga", "album", "game") else {}),
         "WLflg":              {"checkbox": wlflg},
     }
     if tmdb_release and str(tmdb_release)[:10]:
@@ -827,7 +827,7 @@ def build_update_log(log_title, src, need_notion, notion_ok, need_drive, drive_o
 
 st.set_page_config(page_title="ArtéMis", page_icon="favicon.png", layout="wide")
 st.image("logo.png", width=320)
-st.caption("v1.95")
+st.caption("v2.00")
 
 for key, default in {
     "is_running":         False,
@@ -1078,9 +1078,7 @@ if mode == "新規登録":
         with c2:
             final_jp = st.text_input("日本語タイトル（修正可）", value=reg.get("jp_input", jp_input), key="final_jp")
             final_en = st.text_input("英語タイトル（修正可）",   value=reg["cand_en"],                key="final_en")
-            if media_label == "書籍":
-                final_isbn = st.text_input("ISBN", value=reg.get("isbn", ""), key="final_isbn")
-            elif media_label == "漫画":
+            if media_label in ("書籍", "漫画"):
                 final_isbn = st.text_input("ISBN", value=reg.get("isbn", ""), key="final_isbn")
             else:
                 final_isbn = None
@@ -1172,6 +1170,8 @@ if mode == "新規登録":
                         st.session_state.confirm_reg        = None
                         st.session_state.new_search_results = []
                         st.session_state.new_search_done    = False
+                        st.session_state.album_tracks_cache = []
+                        st.session_state.album_tracks_id    = None
                         st.success(f"✅ 登録完了！「{final_jp or final_en}」をNotionに追加しました")
                         time.sleep(1.5)
                         st.rerun()
@@ -1279,7 +1279,7 @@ if mode == "新規登録":
                                 "tmdb_release":   cand.get("release", ""),
                                 "media_type":     "game",
                                 "cand_en":        cand["title"],
-                                "jp_input":       "",
+                                "jp_input":       cand["title"],  # 英語タイトルを初期値に（日本語に上書き可）
                                 "book_authors":   [cand.get("developer", "")],
                                 "book_genres":    cand.get("genres", []),
                                 "isbn":           "",
@@ -1383,9 +1383,11 @@ if mode == "新規登録":
                         prog.progress((n + 1) / len(checked_indices))
                         time.sleep(0.3)
                 st.success(f"✅ {success_count}/{len(checked_indices)} 件登録完了！")
-                st.session_state.new_search_results = []
-                st.session_state.new_search_done    = False
-                st.session_state.bulk_checked       = {}
+                st.session_state.new_search_results  = []
+                st.session_state.new_search_done     = False
+                st.session_state.bulk_checked        = {}
+                st.session_state.album_tracks_cache  = []
+                st.session_state.album_tracks_id     = None
                 time.sleep(1.5)
                 st.rerun()
     st.stop()
@@ -1479,10 +1481,12 @@ if mode == "自動同期" and st.session_state.is_running:
                                     "rich_text": [{"type": "text", "text": {"content": cleaned}}]
                                 }
 
-                # 音楽アルバム: iTunesからカバー再取得
+                # 音楽アルバム: iTunesからカバー再取得（英語タイトル優先）
                 if media_label_val == "音楽アルバム":
-                    title_str = "".join(t["plain_text"] for t in props.get("タイトル", {}).get("title", []))
-                    artist_str = "".join(t["plain_text"] for t in props.get("クリエイター", {}).get("rich_text", []))
+                    en_title_str  = "".join(t["plain_text"] for t in props.get("International Title", {}).get("rich_text", []))
+                    jp_title_str  = "".join(t["plain_text"] for t in props.get("タイトル", {}).get("title", []))
+                    title_str     = en_title_str or jp_title_str
+                    artist_str    = "".join(t["plain_text"] for t in props.get("クリエイター", {}).get("rich_text", []))
                     if title_str:
                         albums = search_albums(title_str, artist=artist_str or None)
                         if albums:
