@@ -321,7 +321,7 @@ def search_books(query: str) -> list:
 
     params = urllib.parse.urlencode({
         "operation": "searchRetrieve",
-        "query": f"title any \"{query}\"",
+        "query": f'title any "{query}" AND mediatype="Book"',
         "recordSchema": "dcndl",
         "maximumRecords": 20,
         "recordPacking": "xml",
@@ -364,27 +364,47 @@ def search_books(query: str) -> list:
             continue
         xml_str = ET.tostring(data_el, encoding="unicode")
 
-        # タイトル
-        title_el = data_el.find(".//{http://purl.org/dc/elements/1.1/}title")
-        title = title_el.text if title_el is not None else ""
+        # タイトル（dcterms:title優先）
+        title_el = data_el.find(".//{http://purl.org/dc/terms/}title")
+        if title_el is None:
+            # rdf:value の中から取得
+            for rv in data_el.findall(".//{http://www.w3.org/1999/02/22-rdf-syntax-ns#}value"):
+                if rv.text:
+                    title = rv.text
+                    break
+            else:
+                title = ""
+        else:
+            title = title_el.text or ""
         if not title:
             continue
 
-        # 著者
-        creators = data_el.findall(".//{http://purl.org/dc/elements/1.1/}creator")
-        authors = [c.text for c in creators if c.text]
+        # 著者（dcterms:creator）
+        creators = data_el.findall(".//{http://purl.org/dc/terms/}creator")
+        authors = []
+        for c in creators:
+            name_el = c.find(".//{http://xmlns.com/foaf/0.1/}name")
+            if name_el is not None and name_el.text:
+                authors.append(name_el.text)
+            elif c.text:
+                authors.append(c.text)
 
         # 出版日
-        date_el = data_el.find(".//{http://purl.org/dc/elements/1.1/}date")
-        published = date_el.text if date_el is not None else ""
+        date_el = data_el.find(".//{http://purl.org/dc/terms/}date")
+        if date_el is None:
+            date_el = data_el.find(".//{http://purl.org/dc/terms/}issued")
+        published = date_el.text[:4] if date_el is not None and date_el.text else ""
 
         # ISBN
-        identifiers = data_el.findall(".//{http://purl.org/dc/elements/1.1/}identifier")
         isbn = ""
-        for id_el in identifiers:
+        for id_el in data_el.findall(".//{http://purl.org/dc/terms/}identifier"):
             val = id_el.text or ""
-            if val.startswith("978") or val.startswith("4"):
-                isbn = val.replace("-", "")
+            clean = val.replace("-", "")
+            if clean.startswith("978") and len(clean) == 13:
+                isbn = clean
+                break
+            elif clean.startswith("4") and len(clean) == 10:
+                isbn = clean
                 break
 
         # カバー画像：ISBNあればOpen Library、なければNDLサムネイル
@@ -620,7 +640,7 @@ def build_update_log(log_title, src, need_notion, notion_ok, need_drive, drive_o
 
 st.set_page_config(page_title="ArtéMis", page_icon="favicon.png", layout="wide")
 st.image("logo.png", width=320)
-st.caption("v1.57")
+st.caption("v1.4")
 
 for key, default in {
     "is_running":         False,
