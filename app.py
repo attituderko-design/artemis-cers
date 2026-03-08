@@ -15,7 +15,8 @@ import io
 NOTION_API_KEY  = st.secrets["NOTION_API_KEY"]
 NOTION_DB_ID    = st.secrets["NOTION_DB_ID"]
 TMDB_API_KEY         = st.secrets["TMDB_API_KEY"]
-GOOGLE_BOOKS_API_KEY = st.secrets["GOOGLE_BOOKS_API_KEY"]
+GOOGLE_BOOKS_API_KEY = st.secrets.get("GOOGLE_BOOKS_API_KEY", "")
+RAKUTEN_APP_ID = st.secrets.get("RAKUTEN_APP_ID", "")
 DRIVE_FOLDER_ID = st.secrets["DRIVE_FOLDER_ID"]
 
 NOTION_HEADERS = {
@@ -331,7 +332,6 @@ def search_books(query: str) -> list:
         req = urllib.request.Request(url, headers={"User-Agent": "ArteMis/1.0"})
         with urllib.request.urlopen(req, timeout=10) as r:
             xml_data = r.read().decode("utf-8")
-        st.caption(f"📡 NDL API OK: {len(xml_data)}bytes")
     except Exception as e:
         st.warning(f"⚠️ 国立国会図書館API エラー: {e}")
         return []
@@ -350,7 +350,6 @@ def search_books(query: str) -> list:
         return []
 
     records = root.findall(".//srw:record", ns)
-    st.caption(f"📚 NDL レコード数: {len(records)}")
 
     SKIP_KEYWORDS = ["録音資料", "映像資料", "楽譜", "type : article", "[録音", "[映像", "[楽譜"]
 
@@ -393,38 +392,42 @@ def search_books(query: str) -> list:
         if len(book_candidates) >= 10:
             break
 
-    st.caption(f"📗 書籍候補: {len(book_candidates)}件")
     if not book_candidates:
         return []
 
-    # Google Books APIでカバー画像を取得
+    # 楽天ブックスAPIでカバー画像を取得
     results = []
     for cand in book_candidates:
-        search_q = cand["title"]
+        author_clean = ""
         if cand["authors"]:
-            author_clean = _re.sub(r'[∥\s]*(著|訳|編).*', '', cand["authors"][0]).strip()
-            if author_clean:
-                search_q += f" {author_clean}"
-        params2 = urllib.parse.urlencode({"q": search_q, "maxResults": 1, "key": GOOGLE_BOOKS_API_KEY})
-        cover = "https://via.placeholder.com/120x160?text=No+Cover"
-        book_id = search_q
+            author_clean = _re.sub(r'[∥\s]*(著|訳|編|著者|作).*', '', cand["authors"][0]).strip()
+        cover = ""
+        book_id = cand["title"]
         published = ""
-        try:
-            url2 = f"https://www.googleapis.com/books/v1/volumes?{params2}"
-            req2 = urllib.request.Request(url2, headers={"User-Agent": "ArteMis/1.0"})
-            with urllib.request.urlopen(req2, timeout=5) as r2:
-                gdata = _json.loads(r2.read().decode())
-            items = gdata.get("items", [])
-            if items:
-                info = items[0].get("volumeInfo", {})
-                img = info.get("imageLinks", {})
-                c = img.get("thumbnail") or img.get("smallThumbnail", "")
-                if c:
-                    cover = c.replace("http://", "https://")
-                book_id = items[0]["id"]
-                published = info.get("publishedDate", "")[:4]
-        except Exception:
-            pass
+        if RAKUTEN_APP_ID:
+            try:
+                rk_params = {
+                    "applicationId": RAKUTEN_APP_ID,
+                    "title": cand["title"],
+                    "hits": 1,
+                    "formatVersion": 2,
+                }
+                if author_clean:
+                    rk_params["author"] = author_clean
+                url_rk = f"https://app.rakuten.co.jp/services/api/BooksBook/Search/20170404?{urllib.parse.urlencode(rk_params)}"
+                req_rk = urllib.request.Request(url_rk, headers={"User-Agent": "ArteMis/1.0"})
+                with urllib.request.urlopen(req_rk, timeout=5) as r_rk:
+                    rk_data = _json.loads(r_rk.read().decode())
+                items_rk = rk_data.get("Items", [])
+                if items_rk:
+                    item = items_rk[0]
+                    c = item.get("largeImageUrl") or item.get("mediumImageUrl") or item.get("smallImageUrl", "")
+                    if c:
+                        cover = c.replace("http://", "https://")
+                    book_id = item.get("isbn") or cand["title"]
+                    published = item.get("salesDate", "")[:4]
+            except Exception:
+                pass
 
         results.append({
             "id":        book_id,
@@ -643,7 +646,7 @@ def build_update_log(log_title, src, need_notion, notion_ok, need_drive, drive_o
 
 st.set_page_config(page_title="ArtéMis", page_icon="favicon.png", layout="wide")
 st.image("logo.png", width=320)
-st.caption("v1.591")
+st.caption("v1.60")
 
 for key, default in {
     "is_running":         False,
