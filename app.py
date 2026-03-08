@@ -359,7 +359,7 @@ def search_books(query: str) -> list:
             continue
 
         # dc:titleを取得
-        title_match = _re.search(r'<dc:title[^>]*>(.*?)</dc:title>', rd_text, _re.DOTALL)
+        title_match = _re.search(r'(?<![a-z_])<dc:title[^>]*>(.*?)</dc:title>', rd_text, _re.DOTALL)
         if not title_match:
             continue
         title = title_match.group(1).strip()
@@ -384,13 +384,14 @@ def search_books(query: str) -> list:
             break
 
     # 最初のブロックの中身をデバッグ表示
-    if record_blocks:
+    st.caption(f"📚 NDL候補: {len(book_candidates)}件 / {len(record_blocks)}ブロック")
+    if record_blocks and len(book_candidates) == 0:
         rd_m = __import__("re").search(r'<recordData>(.*?)</recordData>', record_blocks[0], __import__("re").DOTALL)
-        if rd_m:
-            st.caption(f"🔍 block0: {rd_m.group(1)[:300]}")
-        else:
-            st.caption(f"🔍 block0 raw: {record_blocks[0][:300]}")
-    st.caption(f"📚 NDL候補: {len(book_candidates)}件")
+        rd_text_dbg = rd_m.group(1) if rd_m else record_blocks[0]
+        title_dbg = __import__("re").search(r'<dc:title[^>]*>(.*?)</dc:title>', rd_text_dbg)
+        st.caption(f"🔍 title match: {title_dbg}")
+        filter_dbg = any(x in rd_text_dbg for x in ['録音資料', '映像資料', '楽譜', 'type : article'])
+        st.caption(f"🔍 filtered: {filter_dbg}, rd_text[:200]: {rd_text_dbg[:200]}")
     if not book_candidates:
         return []
 
@@ -638,7 +639,7 @@ def build_update_log(log_title, src, need_notion, notion_ok, need_drive, drive_o
 
 st.set_page_config(page_title="ArtéMis", page_icon="favicon.png", layout="wide")
 st.image("logo.png", width=320)
-st.caption("v1.58")
+st.caption("v1.59")
 
 for key, default in {
     "is_running":         False,
