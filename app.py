@@ -827,7 +827,7 @@ def build_update_log(log_title, src, need_notion, notion_ok, need_drive, drive_o
 
 st.set_page_config(page_title="ArtéMis", page_icon="favicon.png", layout="wide")
 st.image("logo.png", width=320)
-st.caption("v2.00")
+st.caption("v2.01")
 
 for key, default in {
     "is_running":         False,
@@ -1166,7 +1166,9 @@ if mode == "新規登録":
                     )
                     st.session_state.registering = False
                     if ok:
-                        save_to_drive(reg["cover_url"], final_jp if final_jp else final_en, reg["tmdb_id"])
+                        # Drive保存はTMDB画像（映画・ドラマ）のみ。書籍系はURLが低解像度なのでスキップ
+                        if reg["media_type"] in ("movie", "tv"):
+                            save_to_drive(reg["cover_url"], final_jp if final_jp else final_en, reg["tmdb_id"])
                         st.session_state.confirm_reg        = None
                         st.session_state.new_search_results = []
                         st.session_state.new_search_done    = False
@@ -1378,7 +1380,8 @@ if mode == "新規登録":
                             isbn=c_isbn or None,
                         )
                         if ok:
-                            save_to_drive(c_cover, c_jp or c_en, c_tmdb_id)
+                            if c_media in ("movie", "tv"):
+                                save_to_drive(c_cover, c_jp or c_en, c_tmdb_id)
                             success_count += 1
                         prog.progress((n + 1) / len(checked_indices))
                         time.sleep(0.3)
