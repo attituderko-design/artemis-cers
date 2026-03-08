@@ -399,7 +399,9 @@ def search_books(query: str) -> list:
             if m:
                 isbn = _re.sub(r"[^0-9]", "", m.group())[:13]
                 break
-        if len(book_candidates) < 2:  # 最初の1〜2件だけデバッグ表示
+        if len(book_candidates) == 0:  # 最初の1件だけ生XML表示
+            st.code(ET.tostring(rd_el, encoding="unicode")[:2000], language="xml")
+        if len(book_candidates) < 2:
             st.caption(f"🔎 identifiers: {_all_ids} → ISBN: {isbn or 'なし'}")
 
         seen_titles.add(title)
