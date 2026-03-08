@@ -829,11 +829,23 @@ if mode == "新規登録":
                         cand_en      = cand.get("title") or cand.get("name", "")
                         authors      = ""
 
-                    st.image(cover_url)
-                    caption = f"{cand_en}"
-                    if authors: caption += f"　{authors}"
-                    caption += f" {tmdb_release} 🆔 {tmdb_id}"
-                    st.caption(caption)
+                    if media_label == "書籍":
+                        st.write(f"**{cand_en}**")
+                        if "placeholder" in cover_url:
+                            st.caption("📷 表紙なし")
+                        else:
+                            try:
+                                st.image(cover_url)
+                            except Exception:
+                                st.caption("📷 表紙取得失敗")
+                        if authors: st.caption(f"著者: {authors}")
+                        if tmdb_release: st.caption(f"出版: {tmdb_release}")
+                    else:
+                        st.image(cover_url)
+                        caption = f"{cand_en}"
+                        if authors: caption += f"　{authors}"
+                        caption += f" {tmdb_release} 🆔 {tmdb_id}"
+                        st.caption(caption)
                     if st.button("✅ これで登録", key=f"new_reg_{abs_idx}"):
                         if media_label == "書籍":
                             st.session_state.confirm_reg = {
