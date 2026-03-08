@@ -40,6 +40,7 @@ MEDIA_ICON_MAP = {
     "漫画":          ("📚 漫画",          "https://raw.githubusercontent.com/attituderko-design/artemis-cers/refs/heads/main/assets/icons/book-manga.svg"),
     "音楽アルバム":  ("🎵 音楽アルバム",  "https://raw.githubusercontent.com/attituderko-design/artemis-cers/refs/heads/main/assets/icons/disc.svg"),
     "ゲーム":        ("🎮 ゲーム",        "https://raw.githubusercontent.com/attituderko-design/artemis-cers/refs/heads/main/assets/icons/controller.svg"),
+    "演奏曲":        ("🎼 演奏曲",        "https://raw.githubusercontent.com/attituderko-design/artemis-cers/refs/heads/main/assets/icons/music-score.svg"),
 }
 
 RATING_OPTIONS = ["", "★", "★★", "★★★", "★★★★", "★★★★★"]
@@ -425,6 +426,92 @@ def search_books(query: str, author: str = None) -> list:
             "cover_url":  cover,
             "media_type": "book",
         })
+    return results
+
+
+
+# ============================================================
+# MusicBrainz（演奏曲）
+# ============================================================
+MB_HEADERS = {
+    "User-Agent": "ArteMisCERS/2.0 (https://github.com/attituderko-design/artemis-cers)",
+    "Accept": "application/json",
+}
+MB_DEFAULT_COVER = "https://raw.githubusercontent.com/attituderko-design/artemis-cers/refs/heads/main/assets/icons/music-score.svg"
+
+@st.cache_data(ttl=3600)
+def search_mb_composer(name: str) -> list:
+    """作曲家名でMusicBrainzのartistを検索"""
+    try:
+        res = requests.get(
+            "https://musicbrainz.org/ws/2/artist",
+            params={"query": name, "type": "person", "fmt": "json", "limit": 10},
+            headers=MB_HEADERS, timeout=8,
+        )
+        if res.status_code != 200:
+            return []
+        artists = res.json().get("artists", [])
+        # クラシック作曲家に絞る（タグにclassicalを含むものを優先）
+        return [
+            {
+                "id":   a["id"],
+                "name": a["name"],
+                "disambiguation": a.get("disambiguation", ""),
+                "life_span": a.get("life-span", {}).get("begin", "")[:4],
+            }
+            for a in artists
+        ]
+    except Exception as e:
+        st.warning(f"⚠️ MusicBrainz API エラー: {e}")
+        return []
+
+
+@st.cache_data(ttl=3600)
+def search_mb_works(artist_id: str, title_filter: str = "") -> list:
+    """作曲家MBIDで作品一覧を取得（上限なし・ページング）"""
+    works = []
+    offset = 0
+    limit  = 100
+    while True:
+        try:
+            time.sleep(1.1)  # レート制限: 1秒1リクエスト
+            res = requests.get(
+                "https://musicbrainz.org/ws/2/work",
+                params={
+                    "artist": artist_id,
+                    "fmt":    "json",
+                    "limit":  limit,
+                    "offset": offset,
+                },
+                headers=MB_HEADERS, timeout=10,
+            )
+            if res.status_code != 200:
+                break
+            data     = res.json()
+            batch    = data.get("works", [])
+            works   += batch
+            total    = data.get("work-count", 0)
+            offset  += limit
+            if offset >= total or not batch:
+                break
+        except Exception:
+            break
+
+    results = []
+    for w in works:
+        title = w.get("title", "")
+        if title_filter and title_filter.lower() not in title.lower():
+            continue
+        # 作品番号を取れる場合はdisambiguationから
+        disambiguation = w.get("disambiguation", "")
+        results.append({
+            "id":             w["id"],
+            "title":          title,
+            "disambiguation": disambiguation,
+            "type":           w.get("type", ""),
+        })
+    # タイトルでソート
+    results.sort(key=lambda x: x["title"])
     return results
 
 
@@ -827,7 +914,7 @@ def build_update_log(log_title, src, need_notion, notion_ok, need_drive, drive_o
 
 st.set_page_config(page_title="ArtéMis", page_icon="assets/favicon.png", layout="wide")
 st.image("assets/logo.png", width=320)
-st.caption("v2.04")
+st.caption("v2.07")
 
 for key, default in {
     "is_running":         False,
@@ -842,6 +929,11 @@ for key, default in {
     "new_search_done":    False,
     "confirm_reg":        None,
     "registering":        False,
+    "mb_composers":       [],
+    "mb_works":           [],
+    "mb_checked":         {},
+    "mb_selected_comp":   None,
+    "mb_title_filter":    "",
 }.items():
     if key not in st.session_state:
         st.session_state[key] = default
@@ -1010,7 +1102,99 @@ if mode == "新規登録":
 
         st.stop()
 
-    # ── 映画・ドラマ・書籍・漫画・音楽アルバム・ゲーム（検索フロー） ──
+    # ── 演奏曲（MusicBrainz検索フロー） ──
+    if media_label == "演奏曲":
+        st.divider()
+        col_composer, col_title = st.columns([1, 1])
+        composer_input = col_composer.text_input("作曲家名", placeholder="例: Beethoven / ベートーヴェン")
+        title_filter   = col_title.text_input("曲名で絞り込み（任意）", placeholder="例: Symphony")
+
+        if st.button("🔍 検索", key="mb_composer_search"):
+            if composer_input:
+                with st.spinner("作曲家を検索中..."):
+                    composers = search_mb_composer(composer_input)
+                st.session_state.mb_composers     = composers
+                st.session_state.mb_works         = []
+                st.session_state.mb_title_filter  = title_filter
+                st.session_state.mb_selected_comp = None
+            else:
+                st.warning("作曲家名を入力してください")
+
+        # 作曲家候補
+        if st.session_state.get("mb_composers"):
+            composers = st.session_state.mb_composers
+            comp_labels = [
+                f"{c['name']}" + (f"（{c['disambiguation']}）" if c['disambiguation'] else "") + (f" [{c['life_span']}–]" if c['life_span'] else "")
+                for c in composers
+            ]
+            selected_idx = st.radio("作曲家を選択", range(len(comp_labels)), format_func=lambda i: comp_labels[i], key="mb_comp_radio")
+            if st.button("この作曲家の作品一覧を取得", key="mb_fetch_works"):
+                selected_comp = composers[selected_idx]
+                st.session_state.mb_selected_comp = selected_comp
+                with st.spinner(f"{selected_comp['name']} の作品を取得中... （件数によって時間がかかります）"):
+                    works = search_mb_works(selected_comp["id"], st.session_state.get("mb_title_filter", ""))
+                st.session_state.mb_works = works
+
+        # 作品一覧チェックリスト
+        if st.session_state.get("mb_works"):
+            works = st.session_state.mb_works
+            comp  = st.session_state.get("mb_selected_comp", {})
+            st.caption(f"**{comp.get('name','')}** の作品: {len(works)} 件")
+
+            if "mb_checked" not in st.session_state:
+                st.session_state.mb_checked = {}
+
+            col_all, col_none = st.columns([1, 8])
+            if col_all.button("全選択", key="mb_all"):
+                st.session_state.mb_checked = {w["id"]: True for w in works}
+                st.rerun()
+            if col_none.button("全解除", key="mb_none"):
+                st.session_state.mb_checked = {}
+                st.rerun()
+
+            for w in works:
+                label = w["title"] + (f"　{w['disambiguation']}" if w["disambiguation"] else "")
+                checked = st.session_state.mb_checked.get(w["id"], False)
+                if st.checkbox(label, value=checked, key=f"mb_chk_{w['id']}"):
+                    st.session_state.mb_checked[w["id"]] = True
+                else:
+                    st.session_state.mb_checked.pop(w["id"], None)
+
+            selected_works = [w for w in works if st.session_state.mb_checked.get(w["id"])]
+            if selected_works:
+                st.info(f"{len(selected_works)} 件選択中")
+                watched_date_mb = st.date_input("初演奏日", value=None, key="mb_date")
+                rating_mb       = st.selectbox("評価", RATING_OPTIONS, key="mb_rating")
+
+                if st.button(f"✅ {len(selected_works)} 件を一括登録", key="mb_bulk_reg"):
+                    comp_name = comp.get("name", "")
+                    progress  = st.progress(0)
+                    ok_count  = 0
+                    for i, w in enumerate(selected_works):
+                        watched_str = watched_date_mb.isoformat() if watched_date_mb else None
+                        ok = create_notion_page(
+                            jp_title=w["title"],
+                            en_title=w["title"],
+                            media_type_label="演奏曲",
+                            tmdb_id=0,
+                            media_type="score",
+                            cover_url=MB_DEFAULT_COVER,
+                            tmdb_release="",
+                            details={"genres": [], "cast": "", "director": comp_name, "score": None},
+                            wlflg=False,
+                            watched_date=watched_str,
+                            rating=rating_mb if rating_mb else None,
+                        )
+                        if ok:
+                            ok_count += 1
+                        progress.progress((i + 1) / len(selected_works))
+                    st.session_state.mb_checked = {}
+                    st.success(f"✅ {ok_count} 件登録完了！")
+                    if st.button("🔄 新しく登録する", key="mb_clear"):
+                        st.rerun()
+        st.stop()
+
+
     if media_label in ["音楽アルバム"]:
         col_jp, col_en = st.columns([1, 1])
         jp_input      = col_jp.text_input("アルバム名", placeholder="例: 千のナイフ")
@@ -1035,12 +1219,6 @@ if mode == "新規登録":
         col_creator, col_cast = st.columns([1, 1])
         creator_input = col_creator.text_input("クリエイター（著者・監督）", placeholder="例: 宮崎駿 / 道尾秀介")
         cast_input    = col_cast.text_input("キャスト・関係者", placeholder="例: 木村拓哉")
-
-    col_wl, col_date, col_rating = st.columns([1, 2, 2])
-    wlflg        = col_wl.checkbox("WLflg", value=False)
-    date_label   = {"ゲーム": "クリア日", "音楽アルバム": "聴いた日", "書籍": "読了日", "漫画": "読了日"}.get(media_label, "鑑賞日")
-    watched_date = col_date.date_input(date_label, value=None)
-    rating_sel   = col_rating.selectbox("評価", RATING_OPTIONS)
 
     if st.button("🔍 検索", key="new_search"):
         query = en_input if en_input else jp_input
@@ -1113,6 +1291,13 @@ if mode == "新規登録":
                 dupe_titles = "、".join([get_title(d["properties"])[0] for d in dupes])
                 st.warning(f"⚠️ 登録済のデータがあります：{dupe_titles}\nそれでも登録しますか？")
 
+            # 日付・評価・WLflg
+            date_label   = {"ゲーム": "クリア日", "音楽アルバム": "聴いた日", "書籍": "読了日", "漫画": "読了日"}.get(media_label, "鑑賞日")
+            col_wl, col_date, col_rating = st.columns([1, 2, 2])
+            wlflg        = col_wl.checkbox("WLflg", value=False, key="confirm_wl")
+            watched_date = col_date.date_input(date_label, value=None, key="confirm_date")
+            rating_sel   = col_rating.selectbox("評価", RATING_OPTIONS, key="confirm_rating")
+
             col_ok, col_cancel = st.columns([1, 1])
             with col_ok:
                 if st.button("✅ 登録する", key="confirm_ok", disabled=st.session_state.registering):
@@ -1175,8 +1360,8 @@ if mode == "新規登録":
                         st.session_state.album_tracks_cache = []
                         st.session_state.album_tracks_id    = None
                         st.success(f"✅ 登録完了！「{final_jp or final_en}」をNotionに追加しました")
-                        time.sleep(1.5)
-                        st.rerun()
+                        if st.button("🔄 新しく登録する", key="clear_form"):
+                            st.rerun()
                     else:
                         st.error("登録失敗しました")
 
