@@ -322,7 +322,7 @@ def search_books(query: str) -> list:
 
     params = urllib.parse.urlencode({
         "operation": "searchRetrieve",
-        "query": f'title any "{query}" AND mediatype exact "Book"',
+        "query": f'title any "{query}"',
         "recordSchema": "dcndl",
         "maximumRecords": 50,
         "recordPacking": "xml",
