@@ -322,7 +322,7 @@ def search_books(query: str) -> list:
 
     params = urllib.parse.urlencode({
         "operation": "searchRetrieve",
-        "query": f'title any "{query}"',
+        "query": f'title any "{query}" AND language exact "jpn"',
         "recordSchema": "dc",
         "maximumRecords": 50,
         "recordPacking": "xml",
