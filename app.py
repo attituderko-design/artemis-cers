@@ -316,82 +316,84 @@ def search_tmdb(query: str, year=None) -> list:
 
 def search_books(query: str) -> list:
     """国立国会図書館APIで書籍検索 + Google Booksでカバー画像取得"""
-    import urllib.request, urllib.parse, json as _json
+    import urllib.request, urllib.parse, json as _json, re as _re
     import xml.etree.ElementTree as ET
 
-    # NDL検索（recordPacking=string、dc schemaで取得）
     params = urllib.parse.urlencode({
         "operation": "searchRetrieve",
         "query": f'title any "{query}"',
         "recordSchema": "dc",
         "maximumRecords": 50,
-        "recordPacking": "string",
+        "recordPacking": "xml",
     })
     url = f"https://iss.ndl.go.jp/api/sru?{params}"
     try:
         req = urllib.request.Request(url, headers={"User-Agent": "ArteMis/1.0"})
         with urllib.request.urlopen(req, timeout=10) as r:
             xml_data = r.read().decode("utf-8")
-        st.caption(f"📡 NDL API OK: {len(xml_data)}bytes, records={xml_data.count('<record>')}")
+        st.caption(f"📡 NDL API OK: {len(xml_data)}bytes")
     except Exception as e:
         st.warning(f"⚠️ 国立国会図書館API エラー: {e}")
         return []
 
-    # recordPacking=stringの場合、recordDataの中身はエスケープされたXML文字列
-    # dc:titleをre.findallで直接取得
-    import re as _re
-    dc_ns = "http://purl.org/dc/elements/1.1/"
+    # XML名前空間
+    ns = {
+        "srw": "http://www.loc.gov/zing/srw/",
+        "dc":  "http://purl.org/dc/elements/1.1/",
+        "dcndl": "http://ndl.go.jp/dcndl/terms/",
+    }
 
-    # srw:record要素を分割して処理
-    record_blocks = xml_data.split("<record>")[1:]
+    try:
+        root = ET.fromstring(xml_data)
+    except ET.ParseError as e:
+        st.warning(f"⚠️ XML parse error: {e}")
+        return []
+
+    records = root.findall(".//srw:record", ns)
+    st.caption(f"📚 NDL レコード数: {len(records)}")
+
+    SKIP_KEYWORDS = ["録音資料", "映像資料", "楽譜", "type : article", "[録音", "[映像", "[楽譜"]
+
     seen_titles = set()
     book_candidates = []
 
-    for block in record_blocks:
-        # recordDataのテキストを取得
-        rd_match = _re.search(r'<recordData>(.*?)</recordData>', block, _re.DOTALL)
-        if not rd_match:
+    for record in records:
+        # recordDataの中のXMLを文字列として取得
+        rd_el = record.find("srw:recordData", ns)
+        if rd_el is None:
             continue
-        rd_text = rd_match.group(1)
+        rd_text = ET.tostring(rd_el, encoding="unicode")
 
-        # description で記事・録音・映像・楽譜を除外
-        if any(x in rd_text for x in ['録音資料', '映像資料', '楽譜', 'type : article']):
+        # 不要なメディア除外
+        if any(kw in rd_text for kw in SKIP_KEYWORDS):
             continue
 
-        # dc:titleを取得
-        title_match = _re.search(r'(?<![a-z_])<dc:title[^>]*>(.*?)</dc:title>', rd_text, _re.DOTALL)
-        if not title_match:
+        # dc:title を ET で取得（名前空間付き）
+        title_el = rd_el.find(".//{http://purl.org/dc/elements/1.1/}title")
+        if title_el is None or not title_el.text:
             continue
-        title = title_match.group(1).strip()
+        title = title_el.text.strip()
         if not title or title in seen_titles:
             continue
 
-        # dc:creatorを取得
-        creators = _re.findall(r'<dc:creator[^>]*>(.*?)</dc:creator>', rd_text)
-        authors = [c.strip() for c in creators if c.strip()]
+        # dc:creator
+        creators = rd_el.findall(".//{http://purl.org/dc/elements/1.1/}creator")
+        authors = [c.text.strip() for c in creators if c.text]
 
-        # dc:publisherを取得
-        pub_match = _re.search(r'<dc:publisher[^>]*>(.*?)</dc:publisher>', rd_text)
-        publisher = pub_match.group(1).strip() if pub_match else ""
+        # dc:publisher
+        pub_el = rd_el.find(".//{http://purl.org/dc/elements/1.1/}publisher")
+        publisher = pub_el.text.strip() if pub_el is not None and pub_el.text else ""
 
         seen_titles.add(title)
         book_candidates.append({
-            "title":    title,
-            "authors":  authors,
+            "title":     title,
+            "authors":   authors,
             "publisher": publisher,
         })
         if len(book_candidates) >= 10:
             break
 
-    # 最初のブロックの中身をデバッグ表示
-    st.caption(f"📚 NDL候補: {len(book_candidates)}件 / {len(record_blocks)}ブロック")
-    if record_blocks and len(book_candidates) == 0:
-        rd_m = __import__("re").search(r'<recordData>(.*?)</recordData>', record_blocks[0], __import__("re").DOTALL)
-        rd_text_dbg = rd_m.group(1) if rd_m else record_blocks[0]
-        title_dbg = __import__("re").search(r'<dc:title[^>]*>(.*?)</dc:title>', rd_text_dbg)
-        st.caption(f"🔍 title match: {title_dbg}")
-        filter_dbg = any(x in rd_text_dbg for x in ['録音資料', '映像資料', '楽譜', 'type : article'])
-        st.caption(f"🔍 filtered: {filter_dbg}, rd_text[:200]: {rd_text_dbg[:200]}")
+    st.caption(f"📗 書籍候補: {len(book_candidates)}件")
     if not book_candidates:
         return []
 
@@ -400,8 +402,9 @@ def search_books(query: str) -> list:
     for cand in book_candidates:
         search_q = cand["title"]
         if cand["authors"]:
-            author_clean = cand["authors"][0].replace(" 著", "").replace("∥著", "").strip()
-            search_q += f" {author_clean}"
+            author_clean = _re.sub(r'[∥\s]*(著|訳|編).*', '', cand["authors"][0]).strip()
+            if author_clean:
+                search_q += f" {author_clean}"
         params2 = urllib.parse.urlencode({"q": search_q, "maxResults": 1, "key": GOOGLE_BOOKS_API_KEY})
         cover = "https://via.placeholder.com/120x160?text=No+Cover"
         book_id = search_q
@@ -424,16 +427,17 @@ def search_books(query: str) -> list:
             pass
 
         results.append({
-            "id":          book_id,
-            "title":       cand["title"],
-            "authors":     cand["authors"],
-            "publisher":   cand["publisher"],
-            "published":   published,
-            "genres":      [],
-            "cover_url":   cover,
-            "media_type":  "book",
+            "id":        book_id,
+            "title":     cand["title"],
+            "authors":   cand["authors"],
+            "publisher": cand["publisher"],
+            "published": published,
+            "genres":    [],
+            "cover_url": cover,
+            "media_type": "book",
         })
     return results
+
 
 def fetch_book_ja_title(book_id: str) -> str:
     return book_id
@@ -639,7 +643,7 @@ def build_update_log(log_title, src, need_notion, notion_ok, need_drive, drive_o
 
 st.set_page_config(page_title="ArtéMis", page_icon="favicon.png", layout="wide")
 st.image("logo.png", width=320)
-st.caption("v1.59")
+st.caption("v1.591")
 
 for key, default in {
     "is_running":         False,
