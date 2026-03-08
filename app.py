@@ -419,7 +419,9 @@ def search_books(query: str) -> list:
                     rk_params["author"] = author_clean
                 if cand["publisher"]:
                     rk_params["publisherName"] = cand["publisher"]
-
+                    
+                st.write("RK PARAMS", rk_params)
+                st.write("RK URL", url_rk) 
                 url_rk = (
                     "https://app.rakuten.co.jp/services/api/BooksBook/Search/20170404?"
                     + urllib.parse.urlencode(rk_params)
