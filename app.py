@@ -437,8 +437,8 @@ def search_books(query: str) -> list:
                         cover = c.replace("http://", "https://")
                     book_id = item.get("isbn") or cand["title"]
                     published = item.get("salesDate", "")[:4]
-            except Exception:
-                pass
+            except Exception as _rk_e:
+                st.caption(f"🔴 楽天API例外: {_rk_e}")
 
         results.append({
             "id":        book_id,
@@ -873,13 +873,13 @@ if mode == "新規登録":
 
                     if media_label == "書籍":
                         st.write(f"**{cand_en}**")
-                        if "placeholder" in cover_url:
+                        if not cover_url or "placeholder" in cover_url:
                             st.caption("📷 表紙なし")
                         else:
                             try:
                                 st.image(cover_url)
-                            except Exception:
-                                st.caption("📷 表紙取得失敗")
+                            except Exception as _img_e:
+                                st.caption(f"📷 表紙取得失敗: {_img_e}")
                         if authors: st.caption(f"著者: {authors}")
                         if tmdb_release: st.caption(f"出版: {tmdb_release}")
                     else:
