@@ -315,59 +315,92 @@ def search_tmdb(query: str, year=None) -> list:
 
 
 def search_books(query: str) -> list:
-    """Open Library APIで書籍検索（キー不要）"""
+    """国立国会図書館APIで書籍検索（キー不要）"""
     import urllib.request, urllib.parse, json as _json
-    params = urllib.parse.urlencode({"q": query, "limit": 10, "language": "jpn"})
-    url = f"https://openlibrary.org/search.json?{params}"
+    import xml.etree.ElementTree as ET
+
+    params = urllib.parse.urlencode({
+        "operation": "searchRetrieve",
+        "query": f'title="{query}" AND mediatype="Book"',
+        "recordSchema": "dcndl",
+        "maximumRecords": 20,
+        "recordPacking": "xml",
+    })
+    url = f"https://iss.ndl.go.jp/api/sru?{params}"
     try:
         req = urllib.request.Request(url, headers={"User-Agent": "ArteMis/1.0"})
         with urllib.request.urlopen(req, timeout=10) as r:
-            data = _json.loads(r.read().decode())
+            xml_data = r.read().decode("utf-8")
     except Exception as e:
-        # 日本語で見つからない場合は言語制限なしで再試行
-        try:
-            params2 = urllib.parse.urlencode({"q": query, "limit": 20})
-            url2 = f"https://openlibrary.org/search.json?{params2}"
-            req2 = urllib.request.Request(url2, headers={"User-Agent": "ArteMis/1.0"})
-            with urllib.request.urlopen(req2, timeout=10) as r:
-                data = _json.loads(r.read().decode())
-        except Exception as e2:
-            st.warning(f"⚠️ Open Library API エラー: {e2}")
-            return []
-    docs = data.get("docs", [])
+        st.warning(f"⚠️ 国立国会図書館API エラー: {e}")
+        return []
+
+    ns = {
+        "srw":  "http://www.loc.gov/zing/srw/",
+        "dc":   "http://purl.org/dc/elements/1.1/",
+        "dcndl":"http://ndl.go.jp/dcndl/terms/",
+        "dcterms": "http://purl.org/dc/terms/",
+        "rdfs": "http://www.w3.org/2000/01/rdf-schema#",
+    }
+    try:
+        root = ET.fromstring(xml_data)
+    except Exception as e:
+        st.warning(f"⚠️ XML解析エラー: {e}")
+        return []
+
     results = []
-    for doc in docs:
-        cover_id = doc.get("cover_i")
-        if not cover_id:
+    for record in root.findall(".//srw:record", ns):
+        data_el = record.find(".//srw:recordData", ns)
+        if data_el is None:
             continue
-        cover = f"https://covers.openlibrary.org/b/id/{cover_id}-L.jpg"
-        authors = doc.get("author_name", [])
-        published = str(doc.get("first_publish_year", ""))
+        xml_str = ET.tostring(data_el, encoding="unicode")
+
+        # タイトル
+        title_el = data_el.find(".//{http://purl.org/dc/elements/1.1/}title")
+        title = title_el.text if title_el is not None else ""
+        if not title:
+            continue
+
+        # 著者
+        creators = data_el.findall(".//{http://purl.org/dc/elements/1.1/}creator")
+        authors = [c.text for c in creators if c.text]
+
+        # 出版日
+        date_el = data_el.find(".//{http://purl.org/dc/elements/1.1/}date")
+        published = date_el.text if date_el is not None else ""
+
+        # ISBN
+        identifiers = data_el.findall(".//{http://purl.org/dc/elements/1.1/}identifier")
+        isbn = ""
+        for id_el in identifiers:
+            val = id_el.text or ""
+            if val.startswith("978") or val.startswith("4"):
+                isbn = val.replace("-", "")
+                break
+
+        # カバー画像（Open LibraryのISBNベース）
+        cover = ""
+        if isbn:
+            cover = f"https://covers.openlibrary.org/b/isbn/{isbn}-L.jpg"
+        if not cover:
+            continue
+
         results.append({
-            "id":           doc.get("key", "").replace("/works/", ""),
-            "title":        doc.get("title", ""),
-            "authors":      authors,
-            "publisher":    ", ".join(doc.get("publisher", [])[:1]),
-            "published":    published,
-            "genres":       doc.get("subject", [])[:3],
-            "cover_url":    cover,
-            "media_type":   "book",
+            "id":          isbn or title,
+            "title":       title,
+            "authors":     authors,
+            "publisher":   "",
+            "published":   published,
+            "genres":      [],
+            "cover_url":   cover,
+            "media_type":  "book",
         })
         if len(results) >= 10:
             break
     return results
 
 def fetch_book_ja_title(book_id: str) -> str:
-    """Open Library APIでタイトルを取得"""
-    import urllib.request, json as _json
-    url = f"https://openlibrary.org/works/{book_id}.json"
-    try:
-        req = urllib.request.Request(url, headers={"User-Agent": "ArteMis/1.0"})
-        with urllib.request.urlopen(req, timeout=10) as r:
-            data = _json.loads(r.read().decode())
-        return data.get("title", "")
-    except Exception:
-        return ""
+    return book_id
 
 def fetch_tmdb_details(tmdb_id: int, media_type: str, season_number: int | None = None) -> dict:
     base      = "https://api.themoviedb.org/3"
@@ -570,7 +603,7 @@ def build_update_log(log_title, src, need_notion, notion_ok, need_drive, drive_o
 
 st.set_page_config(page_title="ArtéMis", page_icon="favicon.png", layout="wide")
 st.image("logo.png", width=320)
-st.caption("v1.54")
+st.caption("v1.55")
 
 for key, default in {
     "is_running":         False,
