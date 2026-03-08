@@ -430,6 +430,7 @@ def search_books(query: str) -> list:
                     rk_data = _json.loads(r_rk.read().decode())
 
                 items_rk = rk_data.get("Items", [])
+                st.write("RK COUNT", len(items_rk))
                 if items_rk:
                     st.write("RK RAW", items_rk[0])
                     item = items_rk[0]
