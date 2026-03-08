@@ -767,6 +767,7 @@ if mode == "新規登録":
         st.subheader("📝 登録内容の確認・修正")
         c1, c2 = st.columns([1, 2])
         with c1:
+            st.write(reg["cover_url"])
             st.image(reg["cover_url"])
             st.caption(f"{reg['cand_en']} ({reg['media_type']}) {reg['tmdb_release']} 🆔 {reg['tmdb_id']}")
         with c2:
