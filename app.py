@@ -322,12 +322,12 @@ def search_books(query: str) -> list:
 
     params = urllib.parse.urlencode({
         "operation": "searchRetrieve",
-        "query": f'title any "{query}" AND language exact "jpn"',
+        "query": f'title any "{query}"',
         "recordSchema": "dc",
         "maximumRecords": 50,
         "recordPacking": "xml",
     })
-    url = f"https://ndlsearch.ndl.go.jp/api/sru?{params}"
+    url = f"https://iss.ndl.go.jp/api/sru?{params}"
     try:
         req = urllib.request.Request(url, headers={"User-Agent": "ArteMis/1.0"})
         with urllib.request.urlopen(req, timeout=10) as r:
