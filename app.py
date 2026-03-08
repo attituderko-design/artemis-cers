@@ -442,9 +442,8 @@ def search_books(query: str) -> list:
                                 break
                         if isbn:
                             break
-                st.caption(f"📗 '{title_q[:20]}' → ISBN: {isbn or 'なし'}")
-            except Exception as _e:
-                st.caption(f"🔴 OpenSearch例外: {_e}")
+            except Exception:
+                pass
 
         # 楽天ブックスAPIでカバー画像取得
         try:
@@ -462,7 +461,6 @@ def search_books(query: str) -> list:
                 rk_params["title"] = title_clean
             import urllib.parse as _up
             url_rk = "https://openapi.rakuten.co.jp/services/api/BooksBook/Search/20170404?" + _up.urlencode(rk_params)
-            st.caption(f"🔗 URL: {url_rk[:200]}")
             rk_headers = {
                 "Referer":       "https://notion-poster-sync-5wr4mgqdksey3z8tttbk9u.streamlit.app",
                 "Origin":        "https://notion-poster-sync-5wr4mgqdksey3z8tttbk9u.streamlit.app",
@@ -479,10 +477,8 @@ def search_books(query: str) -> list:
                         cover = c.replace("http://", "https://")
                     book_id   = item.get("isbn") or isbn or cand["title"]
                     published = item.get("salesDate", "")[:4]
-            else:
-                st.caption(f"🔴 楽天API {res_rk.status_code}: {res_rk.text[:120]}")
-        except Exception as _e:
-            st.caption(f"🔴 楽天例外: {_e}")
+        except Exception:
+            pass
 
         results.append({
             "id":         isbn or cand["title"],
