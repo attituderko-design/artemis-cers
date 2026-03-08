@@ -66,6 +66,17 @@ def get_drive_service():
 def sanitize_filename(name: str) -> str:
     return re.sub(r'[\\/:*?"<>|]', "_", name)
 
+def clean_author(name: str) -> str:
+    """著者名クリーニング: 接尾語除去 + スペース正規化（半角スペース1個に統一）"""
+    name = re.sub(r'[（(][^）)]*[）)]', '', name)           # 括弧内除去
+    name = re.sub(r'\s*(著|訳|編|著者|監修|イラスト)$', '', name)  # 接尾語除去
+    name = re.sub(r'[\s\u3000]+', ' ', name).strip()        # 全角スペース含む連続スペースを半角1個に
+    return name
+
+def clean_author_list(authors: list) -> str:
+    """著者リストをクリーニングして ' / ' 結合"""
+    return " / ".join(clean_author(a) for a in authors if a.strip())
+
 def make_filename(title: str, tmdb_id) -> str:
     return f"{sanitize_filename(title)}_{tmdb_id}.jpg"
 
@@ -404,7 +415,7 @@ def search_books(query: str, author: str = None) -> list:
         cover = cover.replace("http://", "https://") if cover else ""
         # 著者名から接尾語を除去
         raw_authors = [a.strip() for a in (item.get("author", "") or "").split("/") if a.strip()]
-        authors = [_re.sub(r"[（(][^）)]*[）)]|\s*(著|訳|編|著者|監修|イラスト)$", "", a).strip() for a in raw_authors]
+        authors = [clean_author(a) for a in raw_authors]
         isbn_val = item.get("isbn", "")
         results.append({
             "id":         isbn_val or item.get("title", ""),
@@ -499,10 +510,12 @@ def update_notion_metadata(page_id: str, details: dict, force: bool = False, pro
         properties["ジャンル"] = {"multi_select": [{"name": g} for g in details["genres"]]}
         updated.append("ジャンル")
     if details["cast"] and needs_update("キャスト・関係者"):
-        properties["キャスト・関係者"] = {"rich_text": [{"type": "text", "text": {"content": details["cast"]}}]}
+        cleaned_cast = " / ".join(clean_author(a) for a in details["cast"].split("/") if a.strip())
+        properties["キャスト・関係者"] = {"rich_text": [{"type": "text", "text": {"content": cleaned_cast}}]}
         updated.append("出演者")
     if details["director"] and needs_update("クリエイター"):
-        properties["クリエイター"] = {"rich_text": [{"type": "text", "text": {"content": details["director"]}}]}
+        cleaned_director = clean_author(details["director"])
+        properties["クリエイター"] = {"rich_text": [{"type": "text", "text": {"content": cleaned_director}}]}
         updated.append("監督")
     if details.get("score") is not None and needs_update("TMDB_score"):
         properties["TMDB_score"] = {"number": details["score"]}
@@ -646,7 +659,7 @@ def build_update_log(log_title, src, need_notion, notion_ok, need_drive, drive_o
 
 st.set_page_config(page_title="ArtéMis", page_icon="favicon.png", layout="wide")
 st.image("logo.png", width=320)
-st.caption("v1.86")
+st.caption("v1.87")
 
 for key, default in {
     "is_running":         False,
@@ -906,7 +919,7 @@ if mode == "新規登録":
                         details = {
                             "genres":   reg.get("book_genres", []),
                             "cast":     "",
-                            "director": " / ".join(a.replace(" 著","").replace("著","").replace(" 訳","").replace("訳","").replace(" 編","").replace("編","").strip() for a in reg.get("book_authors", [])),
+                            "director": clean_author_list(reg.get("book_authors", [])),
                             "score":    None,
                         }
                     else:
@@ -1048,10 +1061,7 @@ if mode == "新規登録":
                             c_details  = {
                                 "genres":   cand.get("genres", []),
                                 "cast":     "",
-                                "director": " / ".join(
-                                    a.replace(" 著","").replace("著","").replace(" 訳","").replace("訳","").replace(" 編","").replace("編","").strip()
-                                    for a in cand.get("authors", [])
-                                ),
+                                "director": clean_author_list(cand.get("authors", [])),
                                 "score": None,
                             }
                             c_tmdb_id  = 0
@@ -1153,14 +1163,28 @@ if mode == "自動同期" and st.session_state.is_running:
                 for m in props.get("媒体", {}).get("multi_select", [])
             )
             if is_refresh and not is_movie_drama:
-                # 映画・ドラマ以外はアイコン更新のみ
+                # 映画・ドラマ以外: アイコン更新 + クリエイター名正規化（ISBN有りのみ）
                 media_labels = [m["name"] for m in props.get("媒体", {}).get("multi_select", [])]
                 media_label_val = media_labels[0] if media_labels else None
                 icon_url = get_media_icon_url(media_label_val) if media_label_val else None
+                patch_body = {}
                 if icon_url:
+                    patch_body["icon"] = {"type": "external", "external": {"url": icon_url}}
+
+                # ISBNが存在する書籍はクリエイター名を正規化
+                isbn_val = "".join(t["plain_text"] for t in props.get("ISBN", {}).get("rich_text", []))
+                if isbn_val:
+                    raw_creator = "".join(t["plain_text"] for t in props.get("クリエイター", {}).get("rich_text", []))
+                    if raw_creator:
+                        cleaned = " / ".join(clean_author(a) for a in raw_creator.split("/") if a.strip())
+                        if cleaned != raw_creator:
+                            patch_body.setdefault("properties", {})["クリエイター"] = {
+                                "rich_text": [{"type": "text", "text": {"content": cleaned}}]
+                            }
+
+                if patch_body:
                     api_request("patch", f"https://api.notion.com/v1/pages/{item['id']}",
-                                headers=NOTION_HEADERS,
-                                json={"icon": {"type": "external", "external": {"url": icon_url}}})
+                                headers=NOTION_HEADERS, json=patch_body)
                 msg = f"🎨 アイコン更新: {log_title}"
                 st.write(msg)
                 success_log.append(msg)
