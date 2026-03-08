@@ -572,10 +572,10 @@ def create_notion_page(jp_title: str, en_title: str, media_type_label: str,
         "International Title": {"rich_text": [{"type": "text", "text": {"content": en_title}, "annotations": {"italic": True}}]},
         "媒体":               {"multi_select": [{"name": media_type_label}]},
         **({"TMDB_ID": {"number": tmdb_id}} if tmdb_id else {}),
-        **({"MEDIA_TYPE": {"multi_select": [{"name": media_type}]}} if media_type not in ("book",) else {}),
+        **({"MEDIA_TYPE": {"multi_select": [{"name": media_type}]}} if media_type and media_type not in ("book",) else {}),
         "WLflg":              {"checkbox": wlflg},
     }
-    if tmdb_release:
+    if tmdb_release and str(tmdb_release)[:10]:
         release_date_str = str(tmdb_release)[:10]
         date_prop = {"start": release_date_str}
         if event_end:
@@ -633,7 +633,7 @@ def build_update_log(log_title, src, need_notion, notion_ok, need_drive, drive_o
 
 st.set_page_config(page_title="ArtéMis", page_icon="favicon.png", layout="wide")
 st.image("logo.png", width=320)
-st.caption("v1.80")
+st.caption("v1.81")
 
 for key, default in {
     "is_running":         False,
