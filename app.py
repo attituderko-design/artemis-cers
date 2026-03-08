@@ -383,11 +383,21 @@ def search_books(query: str) -> list:
         pub_el = rd_el.find(".//{http://purl.org/dc/elements/1.1/}publisher")
         publisher = pub_el.text.strip() if pub_el is not None and pub_el.text else ""
 
+        # dc:identifier からISBNを取得
+        isbn = ""
+        for id_el in rd_el.findall(".//{http://purl.org/dc/elements/1.1/}identifier"):
+            val = id_el.text or ""
+            val = val.strip().replace("-", "").replace("ISBN", "").replace("isbn", "").strip()
+            if _re.match(r"^97[89]\d{10}$", val) or _re.match(r"^\d{10}$", val):
+                isbn = val
+                break
+
         seen_titles.add(title)
         book_candidates.append({
             "title":     title,
             "authors":   authors,
             "publisher": publisher,
+            "isbn":      isbn,
         })
         if len(book_candidates) >= 10:
             break
@@ -395,54 +405,31 @@ def search_books(query: str) -> list:
     if not book_candidates:
         return []
 
-    # 楽天ブックスAPIでカバー画像を取得
+    # Open BD APIでカバー画像を取得（ISBN必須・認証不要）
     results = []
     for cand in book_candidates:
-        author_clean = ""
-        if cand["authors"]:
-            author_clean = _re.sub(r'[∥\s]*(著|訳|編|著者|作).*', '', cand["authors"][0]).strip()
-
-        # タイトルをクリーニング（長すぎるNDLタイトルを短縮）
-        title_clean = cand["title"]
-        for sep in ["：", ":", "　", " -- ", "--", "【", "（", "/"]:
-            if sep in title_clean:
-                title_clean = title_clean.split(sep)[0].strip()
-                break
-        title_clean = title_clean[:50]  # 50文字上限
-
         cover = ""
-        book_id = cand["title"]
+        book_id = cand["isbn"] or cand["title"]
         published = ""
-        if RAKUTEN_APP_ID:
+
+        if cand["isbn"]:
             try:
-                rk_params = {
-                    "applicationId": RAKUTEN_APP_ID,
-                    "keyword": title_clean,
-                    "hits": 3,
-                    "formatVersion": 2,
-                    "sort": "sales",
-                }
-                url_rk = f"https://app.rakuten.co.jp/services/api/BooksBook/Search/20170404?{urllib.parse.urlencode(rk_params)}"
-                st.caption(f"🔑 RAKUTEN_APP_ID の値: `{RAKUTEN_APP_ID}`")
-                st.caption(f"🔍 楽天URL: `{url_rk}`")
-                res_rk = requests.get(url_rk, timeout=5)
-                st.caption(f"ステータス: {res_rk.status_code}")
-                if res_rk.status_code == 200:
-                    rk_data = res_rk.json()
-                    items_rk = rk_data.get("Items", [])
-                    st.caption(f"ヒット件数: {len(items_rk)}")
-                    if items_rk:
-                        raw = items_rk[0]
-                        item = raw.get("Item", raw)
-                        c = item.get("largeImageUrl") or item.get("mediumImageUrl") or item.get("smallImageUrl", "")
+                res_obd = requests.get(
+                    f"https://api.openbd.jp/v1/get?isbn={cand['isbn']}",
+                    timeout=5,
+                )
+                if res_obd.status_code == 200:
+                    obd_list = res_obd.json()
+                    if obd_list and obd_list[0]:
+                        obd = obd_list[0]
+                        summary = obd.get("summary", {})
+                        c = summary.get("cover", "")
                         if c:
                             cover = c.replace("http://", "https://")
-                        book_id = item.get("isbn") or cand["title"]
-                        published = item.get("salesDate", "")[:4]
-                else:
-                    st.caption(f"🔴 楽天API {res_rk.status_code}: {res_rk.text[:200]}")
-            except Exception as _rk_e:
-                st.caption(f"🔴 楽天API例外: {_rk_e}")
+                        pub_date = summary.get("pubdate", "")
+                        published = pub_date[:4] if pub_date else ""
+            except Exception:
+                pass
 
         results.append({
             "id":        book_id,
