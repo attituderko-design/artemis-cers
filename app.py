@@ -1175,7 +1175,7 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 st.image("assets/logo.png", width=320)
-st.caption("v3.8")
+st.caption("v3.9")
 
 for key, default in {
     "is_running":         False,
