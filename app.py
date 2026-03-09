@@ -1268,7 +1268,7 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 st.image("assets/logo.png", width=320)
-st.caption("v4.45")
+st.caption("v4.46")
 
 for key, default in {
     "is_running":         False,
@@ -1523,7 +1523,8 @@ if mode == "新規登録":
                     for w in ev_works:
                         label = w["title"] + (f"　{w['disambiguation']}" if w["disambiguation"] else "")
                         val = st.session_state.ev_mb_checked.get(w["id"], False)
-                        checked = st.checkbox(label, value=val, key=f"ev_mb_chk_{w['id']}")
+                        # keyなしでvalue制御のみ — ボタン押後リセットが確実に反映される
+                        checked = st.checkbox(label, value=val)
                         st.session_state.ev_mb_checked[w["id"]] = checked
                     ev_sel_works = [w for w in ev_works if st.session_state.ev_mb_checked.get(w["id"])]
                     if ev_sel_works:
@@ -1534,12 +1535,9 @@ if mode == "新規登録":
                             for w in ev_sel_works:
                                 if len(current) < MAX_MAIN and w["title"] not in [x["title"] for x in current]:
                                     current.append({"title": w["title"], "part": ""})
-                            # 末尾に空欄を1つだけ追加（入力継続用）
                             empty = [{"title": "", "part": ""}]
                             st.session_state.ev_setlist_main = current + empty if len(current) < MAX_MAIN else current
-                            for w in ev_works:
-                                st.session_state.ev_mb_checked[w["id"]] = False
-                                st.session_state.pop(f"ev_mb_chk_{w['id']}", None)
+                            st.session_state.ev_mb_checked = {}
                             st.rerun()
                         if col_add_enc.button("🎊 アンコールに追加", key="ev_mb_add_enc"):
                             current_enc = [x for x in st.session_state.ev_setlist_encore if x["title"].strip()]
@@ -1547,9 +1545,7 @@ if mode == "新規登録":
                                 if len(current_enc) < MAX_ENCORE and w["title"] not in [x["title"] for x in current_enc]:
                                     current_enc.append({"title": w["title"], "part": ""})
                             st.session_state.ev_setlist_encore = current_enc
-                            for w in ev_works:
-                                st.session_state.ev_mb_checked[w["id"]] = False
-                                st.session_state.pop(f"ev_mb_chk_{w['id']}", None)
+                            st.session_state.ev_mb_checked = {}
                             st.rerun()
 
             # ── ライブ/ショー: iTunes検索 ──
