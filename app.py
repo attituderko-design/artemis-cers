@@ -995,7 +995,7 @@ def build_update_log(log_title, src, need_notion, notion_ok, need_drive, drive_o
 
 st.set_page_config(page_title="ArtéMis", page_icon="assets/favicon.png", layout="wide")
 st.image("assets/logo.png", width=320)
-st.caption("v2.14")
+st.caption("v2.15")
 
 for key, default in {
     "is_running":         False,
@@ -1297,7 +1297,7 @@ if mode == "新規登録":
                             if custom_fname == default_fname:
                                 st.session_state.mb_portrait_url  = cover_url_final
                                 st.session_state.mb_portrait_comp = artist_id
-                        st.image(cover_url_final, width=120, caption=comp_name)
+                        st.image(io.BytesIO(img_bytes), width=120, caption=comp_name)
                     else:
                         cover_url_final = MB_DEFAULT_COVER
 
