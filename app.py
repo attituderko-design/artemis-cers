@@ -1253,9 +1253,22 @@ def create_notion_page(jp_title: str, en_title: str, media_type_label: str,
         return False
     return True
 
+def is_japanese_name(name: str) -> bool:
+    """漢字・ひらがな・カタカナを含む場合は日本語著者名とみなす"""
+    return bool(re.search(r'[\u3000-\u9fff\uff00-\uffef]', name))
+
+def normalize_name_for_compare(name: str) -> str:
+    """比較用正規化: 括弧・接尾語除去後、日本語著者名のみ空白を全除去"""
+    name = clean_author(name)  # 括弧・接尾語除去＋スペース半角化
+    if is_japanese_name(name):
+        name = re.sub(r'\s+', '', name)  # 空白全除去
+    return name.lower()
+
 def get_registered_ids(pages: list) -> dict:
-    """登録済みIDをまとめて返す"""
+    """登録済みIDと書籍/漫画/音楽の正規化済みキーをまとめて返す"""
     tmdb, anilist, igdb, itunes, isbn = set(), set(), set(), set(), set()
+    book_keys   = set()  # (正規化タイトル, 正規化著者) — 書籍・漫画
+    album_keys  = set()  # (正規化タイトル, 正規化アーティスト) — 音楽アルバム
     for p in pages:
         pr = p["properties"]
         v = (pr.get("TMDB_ID") or {}).get("number")
@@ -1268,7 +1281,24 @@ def get_registered_ids(pages: list) -> dict:
         if v: itunes.add(int(v))
         v = "".join(t["plain_text"] for t in (pr.get("ISBN") or {}).get("rich_text", []))
         if v: isbn.add(v)
-    return {"tmdb": tmdb, "anilist": anilist, "igdb": igdb, "itunes": itunes, "isbn": isbn}
+        media_val = get_page_media(p)
+        if media_val in ("書籍", "漫画"):
+            raw_title = "".join(t["plain_text"] for t in (pr.get("タイトル") or {}).get("title", []))
+            raw_creator = "".join(t["plain_text"] for t in (pr.get("クリエイター") or {}).get("rich_text", []))
+            norm_title = re.sub(r'\s*[\(（]?\d+[\)）]?\s*$', '', raw_title).strip().lower()
+            for author in re.split(r'[/／・]', raw_creator):
+                author = author.strip()
+                if author:
+                    book_keys.add((norm_title, normalize_name_for_compare(author)))
+        elif media_val == "音楽アルバム":
+            raw_title = "".join(t["plain_text"] for t in (pr.get("タイトル") or {}).get("title", []))
+            raw_creator = "".join(t["plain_text"] for t in (pr.get("クリエイター") or {}).get("rich_text", []))
+            norm_title = raw_title.strip().lower()
+            norm_artist = normalize_name_for_compare(raw_creator)
+            if norm_title and norm_artist:
+                album_keys.add((norm_title, norm_artist))
+    return {"tmdb": tmdb, "anilist": anilist, "igdb": igdb, "itunes": itunes,
+            "isbn": isbn, "book_keys": book_keys, "album_keys": album_keys}
 
 def filter_registered(results: list, media_label: str, reg_ids: dict):
     """検索結果から登録済みを除外。(filtered, excluded_titles) を返す"""
@@ -1276,6 +1306,7 @@ def filter_registered(results: list, media_label: str, reg_ids: dict):
     for cand in results:
         cid   = cand.get("id")
         title = cand.get("title") or cand.get("name") or ""
+        dup   = False
         if media_label in ("映画", "ドラマ"):
             dup = bool(cid and int(cid) in reg_ids["tmdb"])
         elif media_label == "アニメ":
@@ -1283,11 +1314,24 @@ def filter_registered(results: list, media_label: str, reg_ids: dict):
         elif media_label == "ゲーム":
             dup = bool(cid and int(cid) in reg_ids["igdb"])
         elif media_label == "音楽アルバム":
-            dup = bool(cid and int(cid) in reg_ids["itunes"])
+            # iTunes_IDで除外、なければタイトル×アーティスト正規化で除外
+            if cid and int(cid) in reg_ids["itunes"]:
+                dup = True
+            else:
+                norm_title  = title.strip().lower()
+                norm_artist = normalize_name_for_compare(cand.get("artist", ""))
+                dup = (norm_title, norm_artist) in reg_ids["album_keys"]
         elif media_label in ("書籍", "漫画"):
-            dup = bool(cand.get("isbn") and cand.get("isbn") in reg_ids["isbn"])
-        else:
-            dup = False
+            # ISBNで除外、なければタイトル×著者正規化で除外（日本語著者名のみ空白除去）
+            if cand.get("isbn") and cand.get("isbn") in reg_ids["isbn"]:
+                dup = True
+            else:
+                norm_title = re.sub(r'\s*[\(（]?\d+[\)）]?\s*$', '', title).strip().lower()
+                for author in cand.get("authors", []):
+                    norm_author = normalize_name_for_compare(author)
+                    if (norm_title, norm_author) in reg_ids["book_keys"]:
+                        dup = True
+                        break
         if dup:
             excluded.append(title)
         else:
@@ -1331,7 +1375,7 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 st.image("assets/logo.png", width=320)
-st.caption("v4.69")
+st.caption("v4.70")
 
 for key, default in {
     "is_running":         False,
