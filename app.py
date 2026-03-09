@@ -1331,7 +1331,7 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 st.image("assets/logo.png", width=320)
-st.caption("v4.67")
+st.caption("v4.68")
 
 for key, default in {
     "is_running":         False,
@@ -1370,15 +1370,9 @@ for key, default in {
 # ============================================================
 with st.sidebar:
     st.header("操作パネル")
-    st.caption("モードを選択してからデータを取得してください")
 
     st.divider()
-    st.header("動作モード")
-    mode = st.radio("モード", ["新規登録", "データ管理", "自動同期"])
-    sync_scope = "欠損のみ補填"  # legacy compat
-
-    st.divider()
-    if st.button("📥 Notionデータ取得", use_container_width=True, key="load_notion"):
+    if st.button("📥 Notionデータ取得", use_container_width=True, key="load_notion", type="primary"):
         with st.spinner("Notionからデータ取得中..."):
             all_pages = load_notion_data()
             st.session_state.all_pages      = all_pages
@@ -1389,38 +1383,55 @@ with st.sidebar:
             refresh_drive_files()
         st.success(f"{len(st.session_state.pages)} 件取得しました（全媒体: {len(st.session_state.all_pages)} 件）")
 
-    if mode != "新規登録":
-        st.divider()
-        st.header("媒体フィルタ")
-        media_filter_options = list(MEDIA_ICON_MAP.keys())
-        selected_media_filter = st.multiselect(
-            "媒体を絞り込む",
-            options=media_filter_options,
-            default=[],
-            label_visibility="collapsed",
-            key="sidebar_media_filter",
-        )
-    else:
+    if not st.session_state.pages_loaded:
+        st.caption("👆 まずデータを取得してください")
+        mode = "新規登録"  # dummy
+        sync_scope = "欠損のみ補填"
         selected_media_filter = []
+        diff_filter = "フィルタなし"
+        delete_btn  = False
+    else:
+        loaded_count = len(st.session_state.pages)
+        all_count    = len(st.session_state.all_pages)
+        st.caption(f"✅ {loaded_count} 件取得済（全媒体: {all_count} 件）")
 
-    diff_filter = "フィルタなし"
-    delete_btn  = False
-
-    if mode == "自動同期":
         st.divider()
-        if st.button("🚀 自動同期", use_container_width=True, disabled=not st.session_state.pages_loaded):
-            st.session_state.is_running = True
-            st.session_state.sync_mode  = "normal"
-            st.rerun()
-        st.caption("IDを持つ媒体の欠損フィールドを補填します")
-        if st.button("🔄 リフレッシュ", use_container_width=True, disabled=not st.session_state.pages_loaded):
-            st.session_state.is_running = True
-            st.session_state.sync_mode  = "refresh"
-            st.rerun()
-        st.caption("IDを基にすべてのフィールドを強制上書きします\nIDのないデータは情報の正規化のみ実施")
-        if st.button("⏹ 停止", use_container_width=True):
-            st.session_state.is_running = False
-            st.rerun()
+        st.header("動作モード")
+        mode = st.radio("モード", ["新規登録", "データ管理", "自動同期"])
+        sync_scope = "欠損のみ補填"  # legacy compat
+
+        if mode != "新規登録":
+            st.divider()
+            st.header("媒体フィルタ")
+            media_filter_options = list(MEDIA_ICON_MAP.keys())
+            selected_media_filter = st.multiselect(
+                "媒体を絞り込む",
+                options=media_filter_options,
+                default=[],
+                label_visibility="collapsed",
+                key="sidebar_media_filter",
+            )
+        else:
+            selected_media_filter = []
+
+        diff_filter = "フィルタなし"
+        delete_btn  = False
+
+        if mode == "自動同期":
+            st.divider()
+            if st.button("🚀 自動同期", use_container_width=True):
+                st.session_state.is_running = True
+                st.session_state.sync_mode  = "normal"
+                st.rerun()
+            st.caption("IDを持つ媒体の欠損フィールドを補填します")
+            if st.button("🔄 リフレッシュ", use_container_width=True):
+                st.session_state.is_running = True
+                st.session_state.sync_mode  = "refresh"
+                st.rerun()
+            st.caption("IDを基にすべてのフィールドを強制上書きします\nIDのないデータは情報の正規化のみ実施")
+            if st.button("⏹ 停止", use_container_width=True):
+                st.session_state.is_running = False
+                st.rerun()
 
 # ============================================================
 # 新規登録モード
@@ -2250,8 +2261,6 @@ if mode == "新規登録":
 # データ未取得ガード
 # ============================================================
 if not st.session_state.pages_loaded:
-    st.info("👈 まずサイドバーの「📥 Notionデータ取得」を押してください")
-    st.caption("すべてのモードはデータ取得後に利用できます")
     st.stop()
 
 target_pages = st.session_state.pages
