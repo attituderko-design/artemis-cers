@@ -138,14 +138,24 @@ def is_unreleased(page) -> bool:
         return False
 
 def is_incomplete(page) -> bool:
-    props = page["properties"]
-    if is_unreleased(page):                                return False
-    if not page.get("cover"):                              return True
-    if not props.get("TMDB_ID", {}).get("number"):         return True
-    if not props.get("ジャンル", {}).get("multi_select"):  return True
-    if not props.get("キャスト・関係者", {}).get("rich_text"):  return True
-    if not props.get("クリエイター", {}).get("rich_text"):  return True
-    if props.get("TMDB_score", {}).get("number") is None:  return True
+    """媒体別に欠損チェック（自動補填対象かどうか）"""
+    props  = page["properties"]
+    media  = get_page_media(page)
+    if is_unreleased(page): return False
+    if not page.get("cover"): return True
+    if media in ("映画", "ドラマ", "アニメ"):
+        if not props.get("TMDB_ID", {}).get("number"):        return True
+        if not props.get("ジャンル", {}).get("multi_select"): return True
+        if not props.get("キャスト・関係者", {}).get("rich_text"): return True
+        if not props.get("クリエイター", {}).get("rich_text"):    return True
+        if props.get("TMDB_score", {}).get("number") is None: return True
+    elif media in ("書籍", "漫画"):
+        if not props.get("ISBN", {}).get("rich_text"):        return True
+        if not props.get("クリエイター", {}).get("rich_text"):    return True
+    elif media == "音楽アルバム":
+        if not props.get("クリエイター", {}).get("rich_text"):    return True
+    elif media == "ゲーム":
+        if not props.get("IGDB_ID", {}).get("number"):        return True
     return False
 
 # ============================================================
@@ -303,11 +313,21 @@ def load_notion_data() -> list:
         next_cursor = data.get("next_cursor")
     return all_results
 
+# ユニークキーを持つ媒体（自動補填対象）
+UNIQUE_KEY_MEDIA = {"映画", "ドラマ", "アニメ", "書籍", "漫画", "音楽アルバム", "ゲーム"}
+
+def get_page_media(page) -> str | None:
+    """ページの媒体ラベルを返す"""
+    ms = page["properties"].get("媒体", {}).get("multi_select", [])
+    return ms[0]["name"] if ms else None
+
 def filter_target_pages(all_pages: list) -> list:
-    return [
-        p for p in all_pages
-        if any(m["name"] in ["映画", "ドラマ"] for m in p["properties"].get("媒体", {}).get("multi_select", []))
-    ]
+    """データ管理・自動同期対象：全媒体"""
+    return list(all_pages)
+
+def filter_sync_pages(all_pages: list) -> list:
+    """自動補填対象：ユニークキーを持つ媒体のみ"""
+    return [p for p in all_pages if get_page_media(p) in UNIQUE_KEY_MEDIA]
 
 def get_tmdb_id_from_notion(props) -> tuple:
     tmdb_id_val    = props.get("TMDB_ID", {}).get("number")
@@ -1259,7 +1279,7 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 st.image("assets/logo.png", width=320)
-st.caption("v4.53")
+st.caption("v4.6")
 
 for key, default in {
     "is_running":         False,
@@ -1301,14 +1321,14 @@ with st.sidebar:
 
     st.divider()
     st.header("動作モード")
-    mode = st.radio("モード", ["新規登録", "手動確認", "自動同期"])
-    if mode != "新規登録":
-        sync_scope = st.radio("同期範囲", ["未設定のみ更新", "全件走査"])
+    mode = st.radio("モード", ["新規登録", "データ管理", "自動同期"])
+    if mode == "自動同期":
+        sync_scope = st.radio("同期範囲", ["欠損のみ補填", "全件走査"])
     else:
-        sync_scope = "未設定のみ更新"
+        sync_scope = "欠損のみ補填"
 
     st.divider()
-    if st.button("📥 Notionデータ取得", use_container_width=True, disabled=(mode == "新規登録")):
+    if st.button("📥 Notionデータ取得", use_container_width=True, disabled=(mode == "新規登録"), key="load_notion"):
         with st.spinner("Notionからデータ取得中..."):
             all_pages = load_notion_data()
             st.session_state.all_pages      = all_pages
@@ -1333,8 +1353,19 @@ with st.sidebar:
             ],
             index=0,
         )
+        st.divider()
+        st.header("媒体フィルタ")
+        media_filter_options = list(MEDIA_ICON_MAP.keys())
+        selected_media_filter = st.multiselect(
+            "媒体を絞り込む",
+            options=media_filter_options,
+            default=[],
+            label_visibility="collapsed",
+            key="sidebar_media_filter",
+        )
     else:
         diff_filter = "フィルタなし"
+        selected_media_filter = []
 
     if mode == "自動同期":
         st.divider()
@@ -1342,14 +1373,6 @@ with st.sidebar:
             st.session_state.is_running = True
             st.session_state.sync_mode  = "normal"
             st.rerun()
-        st.caption("リフレッシュ対象媒体（未選択=全媒体）")
-        REFRESH_MEDIA_OPTIONS = ["映画", "ドラマ", "書籍", "漫画", "音楽アルバム", "ゲーム", "演奏曲", "展示会", "ライブ/ショー"]
-        st.session_state.refresh_media_filter = st.multiselect(
-            "媒体フィルタ",
-            options=REFRESH_MEDIA_OPTIONS,
-            default=st.session_state.get("refresh_media_filter", []),
-            label_visibility="collapsed",
-        )
         if st.button("🔄 リフレッシュ", use_container_width=True, disabled=not st.session_state.pages_loaded):
             st.session_state.is_running = True
             st.session_state.sync_mode  = "refresh"
@@ -2182,10 +2205,16 @@ if not st.session_state.pages_loaded:
 target_pages = st.session_state.pages
 
 def get_display_pages():
-    if sync_scope == "未設定のみ更新":
-        base = [p for p in target_pages if is_incomplete(p)]
+    if mode == "自動同期":
+        # 自動同期は補填対象媒体のみ
+        base = filter_sync_pages(target_pages)
+        if sync_scope == "欠損のみ補填":
+            base = [p for p in base if is_incomplete(p)]
     else:
         base = target_pages
+    # 媒体フィルタ
+    if selected_media_filter:
+        base = [p for p in base if get_page_media(p) in selected_media_filter]
     return apply_diff_filter(base, diff_filter)
 
 def resolve_needs(notion_ok_now, drive_ok_now):
@@ -2217,7 +2246,7 @@ if mode == "自動同期" and st.session_state.is_running:
     is_refresh   = (st.session_state.sync_mode == "refresh")
     if is_refresh:
         base_targets = st.session_state.all_pages if st.session_state.all_pages else target_pages
-        media_filter = st.session_state.get("refresh_media_filter", [])
+        media_filter = st.session_state.get("sidebar_media_filter", [])
         if media_filter:
             sync_targets = [
                 p for p in base_targets
@@ -2428,10 +2457,10 @@ if mode == "自動同期" and st.session_state.is_running:
 # ============================================================
 # 手動確認モード
 # ============================================================
-if mode == "手動確認":
+if mode == "データ管理":
     display_pages = get_display_pages()
 
-    st.subheader(f"🛠 手動修正　表示: {len(display_pages)} 件 / 全 {len(target_pages)} 件")
+    st.subheader(f"🗂 データ管理　表示: {len(display_pages)} 件 / 全 {len(target_pages)} 件")
     if diff_filter != "フィルタなし":
         st.caption(f"差分フィルタ適用中: {diff_filter}")
 
@@ -2477,18 +2506,83 @@ if mode == "手動確認":
         notion_ok_now, drive_ok_now = get_diff_status(item)
         saved_tmdb_id, saved_media_type = get_tmdb_id_from_notion(props)
 
+        page_media = get_page_media(item)
+        is_tmdb_media = page_media in ("映画", "ドラマ", "アニメ")
+        is_event_media = page_media in ("演奏会（出演）", "演奏会（鑑賞）", "ライブ/ショー", "展示会")
+
         with st.expander(f"{diff_badge(item)}  {log_title}"):
+            # ── ステータス表示 ──
             col_s1, col_s2, col_s3 = st.columns(3)
             col_s1.metric("Notionカバー", "登録済" if notion_ok_now else "未登録")
             col_s2.metric("Drive画像",   "あり"   if drive_ok_now  else "なし")
-            col_s3.metric("TMDB_ID", str(saved_tmdb_id) if saved_tmdb_id else "未登録")
+            col_s3.metric("媒体", page_media or "不明")
 
             current_url = get_current_notion_url(item)
             if current_url:
                 st.caption(f"現在のURL: `{current_url}`")
 
-            st.caption("🔧 TMDB_ID / MEDIA_TYPE を手動で修正")
-            id_col, type_col, save_col = st.columns([2, 2, 1])
+            # ── 全媒体共通編集UI ──
+            st.caption("✏️ 基本情報を編集")
+            existing_rating = props.get("評価", {}).get("select", {}).get("name", "")
+            existing_memo   = "".join(t["plain_text"] for t in props.get("メモ", {}).get("rich_text", []))
+            existing_date_start = props.get("鑑賞日", {}).get("date", {}).get("start", "") or ""
+            edit_col1, edit_col2, edit_col3 = st.columns([1.5, 3, 1])
+            new_rating = edit_col1.selectbox(
+                "評価", RATING_OPTIONS,
+                index=RATING_OPTIONS.index(existing_rating) if existing_rating in RATING_OPTIONS else 0,
+                key=f"edit_rating_{page_id}",
+            )
+            new_memo   = edit_col2.text_input("メモ", value=existing_memo, key=f"edit_memo_{page_id}")
+            new_date   = edit_col3.text_input("鑑賞日", value=existing_date_start, placeholder="YYYY-MM-DD", key=f"edit_date_{page_id}")
+            if edit_col1.button("💾 保存", key=f"save_basic_{page_id}"):
+                patch_props = {}
+                if new_rating != existing_rating:
+                    patch_props["評価"] = {"select": {"name": new_rating} if new_rating else None}
+                if new_memo != existing_memo:
+                    patch_props["メモ"] = {"rich_text": [{"type": "text", "text": {"content": new_memo}}]}
+                if new_date != existing_date_start and new_date:
+                    patch_props["鑑賞日"] = {"date": {"start": new_date}}
+                if patch_props:
+                    res = api_request("patch", f"https://api.notion.com/v1/pages/{page_id}",
+                                      headers=NOTION_HEADERS, json={"properties": patch_props})
+                    if res and res.status_code == 200:
+                        st.success("✅ 更新しました")
+                        for p in st.session_state.pages:
+                            if p["id"] == page_id:
+                                if "評価" in patch_props: p["properties"]["評価"] = patch_props["評価"]
+                                if "メモ" in patch_props: p["properties"]["メモ"] = patch_props["メモ"]
+                                if "鑑賞日" in patch_props: p["properties"]["鑑賞日"] = patch_props["鑑賞日"]
+                    else:
+                        st.error("❌ 更新失敗")
+                else:
+                    st.info("変更なし")
+
+            # ── 演奏会（出演）セットリスト編集 ──
+            if page_media == "演奏会（出演）":
+                st.divider()
+                st.caption("🎻 セットリスト編集")
+                existing_memo_full = "".join(t["plain_text"] for t in props.get("メモ", {}).get("rich_text", []))
+                new_setlist = st.text_area(
+                    "セットリスト（メモ欄に保存）",
+                    value=existing_memo_full,
+                    height=200,
+                    key=f"setlist_edit_{page_id}",
+                    help="1曲1行で入力。[Encore] を区切りとして使用できます",
+                )
+                if st.button("💾 セットリスト保存", key=f"save_setlist_{page_id}"):
+                    res = api_request("patch", f"https://api.notion.com/v1/pages/{page_id}",
+                                      headers=NOTION_HEADERS,
+                                      json={"properties": {"メモ": {"rich_text": [{"type": "text", "text": {"content": new_setlist}}]}}})
+                    if res and res.status_code == 200:
+                        st.success("✅ セットリスト保存完了")
+                    else:
+                        st.error("❌ 保存失敗")
+
+            # ── TMDB_ID修正（映画・ドラマ・アニメのみ） ──
+            if is_tmdb_media:
+                st.divider()
+                st.caption("🔧 TMDB_ID / MEDIA_TYPE を手動で修正")
+                id_col, type_col, save_col = st.columns([2, 2, 1])
             new_tmdb_id = id_col.number_input(
                 "TMDB_ID",
                 value=int(saved_tmdb_id) if saved_tmdb_id else 0,
@@ -2541,93 +2635,93 @@ if mode == "手動確認":
                     else:
                         st.warning("TMDB_IDを入力してください")
 
-            st.divider()
+            # TMDB検索UI（映画・ドラマ・アニメのみ）
+            if is_tmdb_media:
+              default_query = re.sub(r'[Ss]eason\s*\d+', '', en if en else jp).strip()
+              search_col, btn_col = st.columns([4, 1])
+              custom_query = search_col.text_input(
+                  "🔍 検索ワード",
+                  value=default_query,
+                  key=f"custom_query_{page_id}",
+                  placeholder="英語タイトルで検索すると精度UP",
+              )
+              with btn_col:
+                  st.write("")
+                  st.write("")
+                  do_search = st.button("検索", key=f"search_{page_id}")
 
-            default_query = re.sub(r'[Ss]eason\s*\d+', '', en if en else jp).strip()
-            search_col, btn_col = st.columns([4, 1])
-            custom_query = search_col.text_input(
-                "🔍 検索ワード",
-                value=default_query,
-                key=f"custom_query_{page_id}",
-                placeholder="英語タイトルで検索すると精度UP",
-            )
-            with btn_col:
-                st.write("")
-                st.write("")
-                do_search = st.button("検索", key=f"search_{page_id}")
+              if do_search:
+                  try:
+                      candidates = []
+                      if saved_tmdb_id and saved_media_type:
+                          top = fetch_tmdb_by_id(saved_tmdb_id, saved_media_type)
+                          if top:
+                              candidates.append(top)
+                      search_results = search_tmdb(custom_query)
+                      for r in search_results:
+                          if len(candidates) >= 10:
+                              break
+                          if not any(c["id"] == r["id"] for c in candidates):
+                              candidates.append(r)
+                      st.session_state.search_results[page_id] = candidates[:10]
+                  except Exception as e:
+                      st.error(f"検索エラー: {e}")
+                      st.session_state.search_results[page_id] = []
 
-            if do_search:
-                try:
-                    candidates = []
-                    if saved_tmdb_id and saved_media_type:
-                        top = fetch_tmdb_by_id(saved_tmdb_id, saved_media_type)
-                        if top:
-                            candidates.append(top)
-                    search_results = search_tmdb(custom_query)
-                    for r in search_results:
-                        if len(candidates) >= 10:
-                            break
-                        if not any(c["id"] == r["id"] for c in candidates):
-                            candidates.append(r)
-                    st.session_state.search_results[page_id] = candidates[:10]
-                except Exception as e:
-                    st.error(f"検索エラー: {e}")
-                    st.session_state.search_results[page_id] = []
+              candidates = st.session_state.search_results.get(page_id)
+              if candidates is not None:
+                  if not candidates:
+                      st.warning("候補が見つかりませんでした")
+                  else:
+                      for row_start in range(0, len(candidates), 3):
+                          cols = st.columns(3)
+                          for col_idx, cand in enumerate(candidates[row_start:row_start + 3]):
+                              abs_idx = row_start + col_idx
+                              with cols[col_idx]:
+                                  tmdb_id       = cand["id"]
+                                  cover_url     = f"https://image.tmdb.org/t/p/w600_and_h900_bestv2{cand['poster_path']}"
+                                  tmdb_release  = cand.get("release_date") or cand.get("first_air_date") or "不明"
+                                  url_match     = (current_url == cover_url)
+                                  is_current_id = (saved_tmdb_id == tmdb_id)
 
-            candidates = st.session_state.search_results.get(page_id)
-            if candidates is not None:
-                if not candidates:
-                    st.warning("候補が見つかりませんでした")
-                else:
-                    for row_start in range(0, len(candidates), 3):
-                        cols = st.columns(3)
-                        for col_idx, cand in enumerate(candidates[row_start:row_start + 3]):
-                            abs_idx = row_start + col_idx
-                            with cols[col_idx]:
-                                tmdb_id       = cand["id"]
-                                cover_url     = f"https://image.tmdb.org/t/p/w600_and_h900_bestv2{cand['poster_path']}"
-                                tmdb_release  = cand.get("release_date") or cand.get("first_air_date") or "不明"
-                                url_match     = (current_url == cover_url)
-                                is_current_id = (saved_tmdb_id == tmdb_id)
+                                  if is_current_id:
+                                      st.markdown('<div style="border: 3px solid red; padding: 4px; border-radius: 6px;">', unsafe_allow_html=True)
+                                  st.image(cover_url)
+                                  if is_current_id:
+                                      st.markdown('</div>', unsafe_allow_html=True)
 
-                                if is_current_id:
-                                    st.markdown('<div style="border: 3px solid red; padding: 4px; border-radius: 6px;">', unsafe_allow_html=True)
-                                st.image(cover_url)
-                                if is_current_id:
-                                    st.markdown('</div>', unsafe_allow_html=True)
-
-                                st.caption(
-                                    f"{'🔴 現在のID ' if is_current_id else ''}"
-                                    f"{'✅ 同じURL ' if url_match else ''}"
-                                    f"{cand.get('title') or cand.get('name', '?')} "
-                                    f"({cand.get('media_type','?')}) {tmdb_release} "
-                                    f"🆔 {tmdb_id}"
-                                )
-                                if st.button("✅ 決定", key=f"sel_{page_id}_{abs_idx}"):
-                                    date_prop        = props.get("リリース日", {}).get("date")
-                                    existing_release = date_prop.get("start") if date_prop else None
-                                    media_type       = cand.get("media_type", "movie")
-                                    season_number    = get_season_number(props)
-                                    need_notion, need_drive = True, True
-                                    st.session_state.tmdb_id_cache[page_id] = tmdb_id
-                                    n_ok, d_ok, meta_ok, updated = update_all(
-                                        page_id, cover_url, tmdb_release, existing_release,
-                                        log_title, tmdb_id, media_type, need_notion, need_drive,
-                                        force_meta=True, props=props, season_number=season_number,
-                                    )
-                                    parts = []
-                                    if need_notion: parts.append("Notion " + ("✅" if n_ok else "❌失敗"))
-                                    if need_drive:  parts.append("Drive "  + ("✅" if d_ok else "❌失敗"))
-                                    if updated:     parts.append("メタデータ[" + " / ".join(updated) + "] " + ("✅" if meta_ok else "❌失敗"))
-                                    if n_ok and d_ok and meta_ok:
-                                        st.success("保存完了！ " + "　".join(parts))
-                                        st.session_state.search_results.pop(page_id, None)
-                                        for p in st.session_state.pages:
-                                            if p["id"] == page_id:
-                                                p["cover"]                    = {"type": "external", "external": {"url": cover_url}}
-                                                p["properties"]["TMDB_ID"]    = {"number": tmdb_id}
-                                                p["properties"]["MEDIA_TYPE"] = {"multi_select": [{"name": media_type}]}
-                                        time.sleep(1.5)
-                                        st.rerun()
-                                    else:
-                                        st.error("一部失敗しました: " + "　".join(parts))
+                                  st.caption(
+                                      f"{'🔴 現在のID ' if is_current_id else ''}"
+                                      f"{'✅ 同じURL ' if url_match else ''}"
+                                      f"{cand.get('title') or cand.get('name', '?')} "
+                                      f"({cand.get('media_type','?')}) {tmdb_release} "
+                                      f"🆔 {tmdb_id}"
+                                  )
+                                  if st.button("✅ 決定", key=f"sel_{page_id}_{abs_idx}"):
+                                      date_prop        = props.get("リリース日", {}).get("date")
+                                      existing_release = date_prop.get("start") if date_prop else None
+                                      media_type       = cand.get("media_type", "movie")
+                                      season_number    = get_season_number(props)
+                                      need_notion, need_drive = True, True
+                                      st.session_state.tmdb_id_cache[page_id] = tmdb_id
+                                      n_ok, d_ok, meta_ok, updated = update_all(
+                                          page_id, cover_url, tmdb_release, existing_release,
+                                          log_title, tmdb_id, media_type, need_notion, need_drive,
+                                          force_meta=True, props=props, season_number=season_number,
+                                      )
+                                      parts = []
+                                      if need_notion: parts.append("Notion " + ("✅" if n_ok else "❌失敗"))
+                                      if need_drive:  parts.append("Drive "  + ("✅" if d_ok else "❌失敗"))
+                                      if updated:     parts.append("メタデータ[" + " / ".join(updated) + "] " + ("✅" if meta_ok else "❌失敗"))
+                                      if n_ok and d_ok and meta_ok:
+                                          st.success("保存完了！ " + "　".join(parts))
+                                          st.session_state.search_results.pop(page_id, None)
+                                          for p in st.session_state.pages:
+                                              if p["id"] == page_id:
+                                                  p["cover"]                    = {"type": "external", "external": {"url": cover_url}}
+                                                  p["properties"]["TMDB_ID"]    = {"number": tmdb_id}
+                                                  p["properties"]["MEDIA_TYPE"] = {"multi_select": [{"name": media_type}]}
+                                          time.sleep(1.5)
+                                          st.rerun()
+                                      else:
+                                          st.error("一部失敗しました: " + "　".join(parts))
