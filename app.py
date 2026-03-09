@@ -1331,7 +1331,7 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 st.image("assets/logo.png", width=320)
-st.caption("v4.68")
+st.caption("v4.69")
 
 for key, default in {
     "is_running":         False,
@@ -1432,6 +1432,14 @@ with st.sidebar:
             if st.button("⏹ 停止", use_container_width=True):
                 st.session_state.is_running = False
                 st.rerun()
+
+# ============================================================
+# データ未取得ガード
+# ============================================================
+if not st.session_state.pages_loaded:
+    st.stop()
+
+target_pages = st.session_state.pages
 
 # ============================================================
 # 新規登録モード
@@ -2255,12 +2263,6 @@ if mode == "新規登録":
                 st.session_state.reg_cart = []
                 st.rerun()
 
-    st.stop()
-
-# ============================================================
-# データ未取得ガード
-# ============================================================
-if not st.session_state.pages_loaded:
     st.stop()
 
 target_pages = st.session_state.pages
