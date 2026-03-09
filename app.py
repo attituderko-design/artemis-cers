@@ -995,7 +995,7 @@ def build_update_log(log_title, src, need_notion, notion_ok, need_drive, drive_o
 
 st.set_page_config(page_title="ArtéMis", page_icon="assets/favicon.png", layout="wide")
 st.image("assets/logo.png", width=320)
-st.caption("v2.15")
+st.caption("v2.16")
 
 for key, default in {
     "is_running":         False,
@@ -1301,22 +1301,34 @@ if mode == "新規登録":
                     else:
                         cover_url_final = MB_DEFAULT_COVER
 
-                watched_date_mb = st.date_input("初演奏日", value=None, key="mb_date")
-                rating_mb       = st.selectbox("評価", RATING_OPTIONS, key="mb_rating")
+                st.caption("📍 ロケーション情報はNotion上で入力してください。")
+                col_jp_title, _ = st.columns([1, 1])
+                jp_title_mb = col_jp_title.text_input(
+                    "日本語タイトル（任意）",
+                    placeholder="例: 交響曲第9番",
+                    key="mb_jp_title",
+                    help="入力した場合、Notionの「タイトル」に使用されます。空欄の場合はMusicBrainzのタイトルがそのまま入ります。",
+                )
+                col_premiere, col_watched = st.columns([1, 1])
+                premiere_date_mb = col_premiere.date_input("初演（リリース日）", value=None, key="mb_premiere")
+                watched_date_mb  = col_watched.date_input("演奏した日（鑑賞日）", value=None, key="mb_date")
+                rating_mb        = st.selectbox("評価", RATING_OPTIONS, key="mb_rating")
 
                 if st.button(f"✅ {len(selected_works)} 件を一括登録", key="mb_bulk_reg"):
                     progress = st.progress(0)
                     ok_count = 0
                     for i, w in enumerate(selected_works):
-                        watched_str = watched_date_mb.isoformat() if watched_date_mb else None
+                        title_jp    = jp_title_mb.strip() if jp_title_mb.strip() else w["title"]
+                        watched_str  = watched_date_mb.isoformat() if watched_date_mb else None
+                        premiere_str = premiere_date_mb.isoformat() if premiere_date_mb else ""
                         ok = create_notion_page(
-                            jp_title=w["title"],
+                            jp_title=title_jp,
                             en_title=w["title"],
                             media_type_label="演奏曲",
                             tmdb_id=0,
                             media_type="score",
                             cover_url=cover_url_final,
-                            tmdb_release="",
+                            tmdb_release=premiere_str,
                             details={"genres": [], "cast": "", "director": comp_name, "score": None},
                             wlflg=False,
                             watched_date=watched_str,
