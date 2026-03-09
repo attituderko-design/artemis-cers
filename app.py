@@ -1290,7 +1290,7 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 st.image("assets/logo.png", width=320)
-st.caption("v4.65")
+st.caption("v4.66")
 
 for key, default in {
     "is_running":         False,
@@ -1333,10 +1333,7 @@ with st.sidebar:
     st.divider()
     st.header("動作モード")
     mode = st.radio("モード", ["新規登録", "データ管理", "自動同期"])
-    if mode == "自動同期":
-        sync_scope = st.radio("同期範囲", ["欠損のみ補填", "全件走査"])
-    else:
-        sync_scope = "欠損のみ補填"
+    sync_scope = "欠損のみ補填"  # legacy compat
 
     st.divider()
     if st.button("📥 Notionデータ取得", use_container_width=True, disabled=(mode == "新規登録"), key="load_notion"):
@@ -1352,19 +1349,6 @@ with st.sidebar:
 
     if mode != "新規登録":
         st.divider()
-        st.header("差分フィルタ")
-        st.caption("🟢=登録済　🔴=未登録")
-        diff_filter = st.radio(
-            "対象を絞り込む",
-            [
-                "フィルタなし",
-                "Notionのみ更新（Driveあり・Notionカバーなし）",
-                "Driveのみ更新（Notionカバーあり・Driveなし）",
-                "どちらも更新（両方なし）",
-            ],
-            index=0,
-        )
-        st.divider()
         st.header("媒体フィルタ")
         media_filter_options = list(MEDIA_ICON_MAP.keys())
         selected_media_filter = st.multiselect(
@@ -1375,29 +1359,26 @@ with st.sidebar:
             key="sidebar_media_filter",
         )
     else:
-        diff_filter = "フィルタなし"
         selected_media_filter = []
+
+    diff_filter = "フィルタなし"
+    delete_btn  = False
 
     if mode == "自動同期":
         st.divider()
-        if st.button("🚀 自動同期開始", use_container_width=True, disabled=not st.session_state.pages_loaded):
+        if st.button("🚀 自動同期", use_container_width=True, disabled=not st.session_state.pages_loaded):
             st.session_state.is_running = True
             st.session_state.sync_mode  = "normal"
             st.rerun()
+        st.caption("IDを持つ媒体の欠損フィールドを補填します")
         if st.button("🔄 リフレッシュ", use_container_width=True, disabled=not st.session_state.pages_loaded):
             st.session_state.is_running = True
             st.session_state.sync_mode  = "refresh"
             st.rerun()
+        st.caption("IDを基にすべてのフィールドを強制上書きします\nIDのないデータは情報の正規化のみ実施")
         if st.button("⏹ 停止", use_container_width=True):
             st.session_state.is_running = False
             st.rerun()
-
-    if mode != "新規登録":
-        st.divider()
-        confirm_delete = st.checkbox("カバー全削除を許可")
-        delete_btn = st.button("🗑 カバー全削除", disabled=not confirm_delete or not st.session_state.pages_loaded)
-    else:
-        delete_btn = False
 
 # ============================================================
 # 新規登録モード
@@ -2530,23 +2511,58 @@ if mode == "データ管理":
         is_event_media = page_media in ("演奏会（出演）", "演奏会（鑑賞）", "ライブ/ショー", "展示会")
 
         with st.expander(f"{diff_badge(item)}  {log_title}"):
-            # ── ステータス表示 ──
-            col_s1, col_s2, col_s3 = st.columns(3)
-            col_s1.metric("Notionカバー", "登録済" if notion_ok_now else "未登録")
-            col_s2.metric("Drive画像",   "あり"   if drive_ok_now  else "なし")
-            col_s3.metric("媒体", page_media or "不明")
+            # ── ステータス行 ──
+            stat_c1, stat_c2, stat_c3 = st.columns(3)
+            stat_c1.metric("媒体", page_media or "不明")
+            stat_c2.metric("Notionカバー", "登録済" if notion_ok_now else "未登録")
+            stat_c3.metric("Drive画像",   "あり"   if drive_ok_now  else "なし")
 
+            # ── カバー画像プレビュー ──
             current_url = get_current_notion_url(item)
             if current_url:
-                st.caption(f"現在のURL: `{current_url}`")
+                img_c, info_c = st.columns([1, 3])
+                img_c.image(current_url, use_container_width=True)
+                with info_c:
+                    st.caption(f"カバーURL: `{current_url}`")
+                    # 読み取り専用フィールド表示
+                    release_val = ((props.get("リリース日") or {}).get("date") or {}).get("start", "") or "—"
+                    genre_items = (props.get("ジャンル") or {}).get("multi_select", [])
+                    genre_val   = "　".join(g["name"] for g in genre_items) if genre_items else "—"
+                    creator_val = "".join(t["plain_text"] for t in (props.get("クリエイター") or {}).get("rich_text", [])) or "—"
+                    cast_val    = "".join(t["plain_text"] for t in (props.get("キャスト・関係者") or {}).get("rich_text", [])) or "—"
+                    tmdb_score  = (props.get("TMDB_score") or {}).get("number")
+                    isbn_val    = "".join(t["plain_text"] for t in (props.get("ISBN") or {}).get("rich_text", [])) or "—"
+                    igdb_id_val = (props.get("IGDB_ID") or {}).get("number")
+                    itunes_id_val = (props.get("iTunes_ID") or {}).get("number")
+                    anilist_id_val = (props.get("AniList_ID") or {}).get("number")
 
-            # ── 全媒体共通編集UI ──
+                    st.caption(f"📅 リリース日: {release_val}")
+                    if is_tmdb_media:
+                        st.caption(f"🎭 ジャンル: {genre_val}")
+                        st.caption(f"🎬 クリエイター: {creator_val}")
+                        st.caption(f"🎭 キャスト・関係者: {cast_val[:80] + '…' if len(cast_val) > 80 else cast_val}")
+                        if tmdb_score is not None:
+                            st.caption(f"⭐ TMDBスコア: {tmdb_score}")
+                        st.caption(f"🆔 TMDB_ID: {saved_tmdb_id or '—'}　MEDIA_TYPE: {saved_media_type or '—'}")
+                    if page_media in ("書籍", "漫画"):
+                        st.caption(f"📚 クリエイター: {creator_val}")
+                        st.caption(f"🔢 ISBN: {isbn_val}")
+                    if page_media == "音楽アルバム":
+                        st.caption(f"🎵 クリエイター: {creator_val}")
+                        if itunes_id_val: st.caption(f"🆔 iTunes_ID: {itunes_id_val}")
+                    if page_media == "ゲーム":
+                        if igdb_id_val: st.caption(f"🆔 IGDB_ID: {igdb_id_val}")
+                    if page_media == "アニメ":
+                        if anilist_id_val: st.caption(f"🆔 AniList_ID: {anilist_id_val}")
+
+            # ── 基本情報編集 ──
+            st.divider()
             st.caption("✏️ 基本情報を編集")
             existing_rating = (props.get("評価") or {}).get("select") or {}
             existing_rating = existing_rating.get("name", "") if isinstance(existing_rating, dict) else ""
             existing_memo   = "".join(t["plain_text"] for t in (props.get("メモ") or {}).get("rich_text", []))
             existing_date_start = ((props.get("鑑賞日") or {}).get("date") or {}).get("start", "") or ""
-            edit_col1, edit_col2, edit_col3 = st.columns([1.5, 3, 1])
+            edit_col1, edit_col2, edit_col3 = st.columns([1.5, 3, 1.2])
             new_rating = edit_col1.selectbox(
                 "評価", RATING_OPTIONS,
                 index=RATING_OPTIONS.index(existing_rating) if existing_rating in RATING_OPTIONS else 0,
@@ -2554,6 +2570,18 @@ if mode == "データ管理":
             )
             new_memo   = edit_col2.text_input("メモ", value=existing_memo, key=f"edit_memo_{page_id}")
             new_date   = edit_col3.text_input("鑑賞日", value=existing_date_start, placeholder="YYYY-MM-DD", key=f"edit_date_{page_id}")
+
+            # タイトル編集（全媒体）
+            existing_jp = jp or ""
+            existing_en = en or ""
+            title_c1, title_c2 = st.columns(2)
+            new_jp = title_c1.text_input("日本語タイトル", value=existing_jp, key=f"edit_jp_{page_id}")
+            new_en = title_c2.text_input("英語タイトル",   value=existing_en, key=f"edit_en_{page_id}")
+
+            # リリース日編集（全媒体）
+            existing_release_edit = ((props.get("リリース日") or {}).get("date") or {}).get("start", "") or ""
+            new_release = st.text_input("📅 リリース日", value=existing_release_edit, placeholder="YYYY-MM-DD", key=f"edit_release_{page_id}")
+
             if edit_col1.button("💾 保存", key=f"save_basic_{page_id}"):
                 patch_props = {}
                 if new_rating != existing_rating:
@@ -2562,6 +2590,12 @@ if mode == "データ管理":
                     patch_props["メモ"] = {"rich_text": [{"type": "text", "text": {"content": new_memo}}]}
                 if new_date != existing_date_start and new_date:
                     patch_props["鑑賞日"] = {"date": {"start": new_date}}
+                if new_jp != existing_jp:
+                    patch_props["名前"] = {"title": [{"type": "text", "text": {"content": new_jp}}]}
+                if new_en != existing_en:
+                    patch_props["英語タイトル"] = {"rich_text": [{"type": "text", "text": {"content": new_en}}]}
+                if new_release != existing_release_edit and new_release:
+                    patch_props["リリース日"] = {"date": {"start": new_release}}
                 if patch_props:
                     res = api_request("patch", f"https://api.notion.com/v1/pages/{page_id}",
                                       headers=NOTION_HEADERS, json={"properties": patch_props})
@@ -2569,9 +2603,8 @@ if mode == "データ管理":
                         st.success("✅ 更新しました")
                         for p in st.session_state.pages:
                             if p["id"] == page_id:
-                                if "評価" in patch_props: p["properties"]["評価"] = patch_props["評価"]
-                                if "メモ" in patch_props: p["properties"]["メモ"] = patch_props["メモ"]
-                                if "鑑賞日" in patch_props: p["properties"]["鑑賞日"] = patch_props["鑑賞日"]
+                                for k, v in patch_props.items():
+                                    p["properties"][k] = v
                     else:
                         st.error("❌ 更新失敗")
                 else:
@@ -2581,7 +2614,7 @@ if mode == "データ管理":
             if page_media == "演奏会（出演）":
                 st.divider()
                 st.caption("🎻 セットリスト編集")
-                existing_memo_full = "".join(t["plain_text"] for t in props.get("メモ", {}).get("rich_text", []))
+                existing_memo_full = "".join(t["plain_text"] for t in (props.get("メモ") or {}).get("rich_text", []))
                 new_setlist = st.text_area(
                     "セットリスト（メモ欄に保存）",
                     value=existing_memo_full,
