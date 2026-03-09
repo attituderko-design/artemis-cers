@@ -52,26 +52,20 @@ def get_media_icon_url(media_label: str) -> str:
 # ============================================================
 # 登録完了後UI（共通）
 # ============================================================
+COMMON_CLEAR_KEYS = ["new_search_results", "new_search_done", "confirm_reg", "bulk_checked",
+                     "reg_cart", "prev_media_label"]
+
 def show_post_register_ui(media_label: str, clear_keys: list):
     """登録完了後に「続けて登録」「終了」ボタンを表示する共通コンポーネント"""
     st.success("✅ 登録完了！")
     col_cont, col_end = st.columns([1, 1])
     if col_cont.button(f"➕ 続けて{media_label}を登録する", type="primary", key="post_reg_continue"):
-        for k in clear_keys:
-            st.session_state.pop(k, None)
-        # 検索結果・確認画面もクリア
-        for k in ["new_search_results", "new_search_done", "confirm_reg", "bulk_checked",
-                  "reg_cart", "prev_media_label"]:
-            st.session_state.pop(k, None)
+        st.session_state["_post_reg_action"] = "continue"
+        st.session_state["_post_reg_clear"]  = clear_keys
         st.rerun()
     if col_end.button("✅ 登録を終了する", key="post_reg_end"):
-        for k in clear_keys:
-            st.session_state.pop(k, None)
-        for k in ["new_search_results", "new_search_done", "confirm_reg", "bulk_checked",
-                  "reg_cart", "prev_media_label"]:
-            st.session_state.pop(k, None)
-        # 媒体選択をプレースホルダーに戻す
-        st.session_state["reg_media"] = "（媒体を選択してください）"
+        st.session_state["_post_reg_action"] = "end"
+        st.session_state["_post_reg_clear"]  = clear_keys
         st.rerun()
 
 # ============================================================
@@ -1274,7 +1268,7 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 st.image("assets/logo.png", width=320)
-st.caption("v4.43")
+st.caption("v4.45")
 
 for key, default in {
     "is_running":         False,
@@ -1383,6 +1377,17 @@ with st.sidebar:
 # ============================================================
 if mode == "新規登録":
     st.subheader("➕ 新規登録")
+
+    # ── 登録完了後アクション処理（st.stop()より前に実行する必要がある）──
+    _post_action = st.session_state.pop("_post_reg_action", None)
+    _post_clear  = st.session_state.pop("_post_reg_clear", [])
+    if _post_action == "continue":
+        for k in _post_clear + COMMON_CLEAR_KEYS:
+            st.session_state.pop(k, None)
+    elif _post_action == "end":
+        for k in _post_clear + COMMON_CLEAR_KEYS:
+            st.session_state.pop(k, None)
+        st.session_state["reg_media"] = "（媒体を選択してください）"
 
     # ── 媒体選択 ──
     MEDIA_SELECT_PLACEHOLDER = "（媒体を選択してください）"
@@ -1626,7 +1631,8 @@ if mode == "新規登録":
                 if col_del.button("✕", key=f"ev_main_del_{i}") and len(main_list) > 1:
                     st.session_state.ev_setlist_main = [x for j, x in enumerate(new_main) if j != i]
                     st.rerun()
-            st.session_state.ev_setlist_main = new_main
+            if new_main:
+                st.session_state.ev_setlist_main = new_main
             filled_main = [x for x in new_main if x["title"].strip()]
             if len(filled_main) < MAX_MAIN:
                 # 末尾が既に空欄の場合はボタンを出さない
@@ -1651,11 +1657,16 @@ if mode == "新規登録":
                 if col_del2.button("✕", key=f"ev_enc_del_{i}"):
                     st.session_state.ev_setlist_encore = [x for j, x in enumerate(new_enc) if j != i]
                     st.rerun()
-            st.session_state.ev_setlist_encore = new_enc
-            if len([x for x in new_enc if x["title"].strip()]) < MAX_ENCORE:
-                if st.button("＋ アンコール曲を追加", key="ev_enc_add"):
-                    st.session_state.ev_setlist_encore = [x for x in new_enc if x["title"].strip()] + [{"title": "", "part": ""}]
-                    st.rerun()
+            # rerun後にwidget値が確定してから書き戻す（曲が入っている行のみ保持 or 末尾空欄1つ許容）
+            if new_enc:
+                st.session_state.ev_setlist_encore = new_enc
+            filled_enc = [x for x in new_enc if x["title"].strip()]
+            if len(filled_enc) < MAX_ENCORE:
+                last_enc_empty = new_enc and not new_enc[-1]["title"].strip()
+                if not last_enc_empty:
+                    if st.button("＋ アンコール曲を追加", key="ev_enc_add"):
+                        st.session_state.ev_setlist_encore = filled_enc + [{"title": "", "part": ""}]
+                        st.rerun()
 
         st.divider()
         event_location = location_search_ui("event", media_label)
