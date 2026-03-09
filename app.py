@@ -143,12 +143,14 @@ def is_incomplete(page) -> bool:
     media  = get_page_media(page)
     if is_unreleased(page): return False
     if not page.get("cover"): return True
-    if media in ("映画", "ドラマ", "アニメ"):
+    if media in ("映画", "ドラマ"):
         if not props.get("TMDB_ID", {}).get("number"):        return True
         if not props.get("ジャンル", {}).get("multi_select"): return True
         if not props.get("キャスト・関係者", {}).get("rich_text"): return True
         if not props.get("クリエイター", {}).get("rich_text"):    return True
         if props.get("TMDB_score", {}).get("number") is None: return True
+    elif media == "アニメ":
+        if not props.get("AniList_ID", {}).get("number"):     return True
     elif media in ("書籍", "漫画"):
         if not props.get("ISBN", {}).get("rich_text"):        return True
         if not props.get("クリエイター", {}).get("rich_text"):    return True
@@ -1180,7 +1182,10 @@ def create_notion_page(jp_title: str, en_title: str, media_type_label: str,
                        isbn: str | None = None,
                        location: str | None = None,
                        event_end: str | None = None,
-                       memo: str | None = None) -> bool:
+                       memo: str | None = None,
+                       igdb_id: int | None = None,
+                       itunes_id: int | None = None,
+                       anilist_id: int | None = None) -> bool:
     """Notionに新規ページを作成してポスター・メタデータも一括登録"""
     properties = {
         "タイトル":            {"title": [{"type": "text", "text": {"content": jp_title}}]},
@@ -1210,6 +1215,12 @@ def create_notion_page(jp_title: str, en_title: str, media_type_label: str,
         properties["TMDB_score"] = {"number": details["score"]}
     if isbn:
         properties["ISBN"] = {"rich_text": [{"type": "text", "text": {"content": isbn}}]}
+    if igdb_id:
+        properties["IGDB_ID"] = {"number": igdb_id}
+    if itunes_id:
+        properties["iTunes_ID"] = {"number": itunes_id}
+    if anilist_id:
+        properties["AniList_ID"] = {"number": anilist_id}
     if memo:
         properties["メモ"] = {"rich_text": [{"type": "text", "text": {"content": memo}}]}
     if location and location.get("lat") and location.get("lon"):
@@ -1279,7 +1290,7 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 st.image("assets/logo.png", width=320)
-st.caption("v4.6")
+st.caption("v4.61")
 
 for key, default in {
     "is_running":         False,
@@ -1930,6 +1941,9 @@ if mode == "新規登録":
                         isbn=final_isbn or None,
                         memo=memo_text,
                         location=confirm_location,
+                        igdb_id=reg.get("igdb_id"),
+                        itunes_id=reg.get("itunes_id"),
+                        anilist_id=reg.get("anilist_id"),
                     )
                     st.session_state.registering = False
                     if ok:
@@ -2033,6 +2047,7 @@ if mode == "新規登録":
                                 "cand_en": cand["title"], "jp_input": cand["title"],
                                 "book_authors": [cand.get("developer", "")], "book_genres": cand.get("genres", []),
                                 "isbn": "", "game_publisher": cand.get("publisher", ""),
+                                "igdb_id": cand.get("id"),
                             }
                         elif media_label == "アニメ":
                             st.session_state.confirm_reg = {
@@ -2043,6 +2058,7 @@ if mode == "新規登録":
                                 "book_authors": [cand.get("director", "")],
                                 "book_genres": cand.get("genres", []),
                                 "isbn": "", "anime_score": cand.get("score"),
+                                "anilist_id": cand.get("id"),
                             }
                         else:
                             with st.spinner("日本語タイトル取得中..."):
@@ -2080,7 +2096,7 @@ if mode == "新規登録":
                             "watched": "", "rating": "", "wlflg": False,
                             "media_type": "album", "tmdb_id": 0,
                             "details":    {"genres": [], "cast": "", "director": clean_author(cand.get("artist", "")), "score": None},
-                            "isbn":       "",
+                            "isbn":       "", "itunes_id": cand.get("id"),
                             "location":   None, "media_label": media_label,
                         }
                     elif media_label == "ゲーム":
@@ -2090,7 +2106,7 @@ if mode == "新規登録":
                             "watched": "", "rating": "", "wlflg": False,
                             "media_type": "game", "tmdb_id": 0,
                             "details":    {"genres": cand.get("genres", []), "cast": cand.get("publisher", ""), "director": clean_author(cand.get("developer", "")), "score": None},
-                            "isbn":       "",
+                            "isbn":       "", "igdb_id": cand.get("id"),
                             "location":   None, "media_label": media_label,
                         }
                     elif media_label == "アニメ":
@@ -2101,7 +2117,7 @@ if mode == "新規登録":
                             "watched": "", "rating": "", "wlflg": False,
                             "media_type": "anime", "tmdb_id": 0,
                             "details":    {"genres": cand.get("genres", []), "cast": "", "director": cand.get("director", ""), "score": cand.get("score")},
-                            "isbn":       "",
+                            "isbn":       "", "anilist_id": cand.get("id"),
                             "location":   None, "media_label": media_label,
                         }
                     else:
@@ -2175,6 +2191,9 @@ if mode == "新規登録":
                         watched_date=item["watched"] or None,
                         rating=item["rating"] or None,
                         isbn=item.get("isbn") or None,
+                        igdb_id=item.get("igdb_id"),
+                        itunes_id=item.get("itunes_id"),
+                        anilist_id=item.get("anilist_id"),
                         location=item.get("location"),
                     )
                     if ok:
