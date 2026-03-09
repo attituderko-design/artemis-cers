@@ -50,6 +50,23 @@ def get_media_icon_url(media_label: str) -> str:
     return MEDIA_ICON_MAP.get(media_label, ("", ""))[1]
 
 # ============================================================
+# 登録完了後UI（共通）
+# ============================================================
+def show_post_register_ui(media_label: str, clear_keys: list):
+    """登録完了後に「続けて登録」「終了」ボタンを表示する共通コンポーネント"""
+    st.success("✅ 登録完了！")
+    col_cont, col_end = st.columns([1, 1])
+    if col_cont.button(f"➕ 続けて{media_label}を登録する", type="primary", key="post_reg_continue"):
+        for k in clear_keys:
+            st.session_state.pop(k, None)
+        st.rerun()
+    if col_end.button("✅ 登録を終了する", key="post_reg_end"):
+        for k in clear_keys:
+            st.session_state.pop(k, None)
+        st.session_state.pop("selected_media", None)
+        st.rerun()
+
+# ============================================================
 # Google Drive API クライアント
 # ============================================================
 @st.cache_resource
@@ -1249,7 +1266,7 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 st.image("assets/logo.png", width=320)
-st.caption("v4.3")
+st.caption("v4.4")
 
 for key, default in {
     "is_running":         False,
@@ -1646,12 +1663,13 @@ if mode == "新規登録":
                 location=event_location,
                 memo=memo_text,
             )
+            EVENT_CLEAR_KEYS = ["ev_mb_composers", "ev_mb_works", "ev_mb_checked", "ev_mb_selected",
+                                "ev_it_results", "ev_it_checked",
+                                "ev_setlist_main", "ev_setlist_encore"]
             if ok:
-                for key in ["ev_mb_composers", "ev_mb_works", "ev_mb_checked", "ev_mb_selected",
-                            "ev_it_results", "ev_it_checked",
-                            "ev_setlist_main", "ev_setlist_encore"]:
+                for key in EVENT_CLEAR_KEYS:
                     st.session_state.pop(key, None)
-                st.success("✅ 登録完了！")
+                show_post_register_ui(media_label, EVENT_CLEAR_KEYS)
             else:
                 st.error("❌ 登録失敗")
         st.stop()
@@ -1951,10 +1969,11 @@ if mode == "新規登録":
                     if ok:
                         if reg["media_type"] in ("movie", "tv"):
                             save_to_drive(reg["cover_url"], final_jp or final_en, reg["tmdb_id"])
-                        st.success("✅ 登録完了！")
-                        st.session_state.confirm_reg = None
-                        time.sleep(1)
-                        st.rerun()
+                        st.session_state.confirm_reg        = None
+                        st.session_state.new_search_results = []
+                        st.session_state.new_search_done    = False
+                        SINGLE_CLEAR_KEYS = ["confirm_reg", "new_search_results", "new_search_done", "bulk_checked"]
+                        show_post_register_ui(media_label, SINGLE_CLEAR_KEYS)
                     else:
                         st.error("❌ 登録失敗")
 
@@ -2197,15 +2216,12 @@ if mode == "新規登録":
                         success_count += 1
                     prog.progress((n + 1) / len(st.session_state.reg_cart))
                     time.sleep(0.3)
-                st.success(f"✅ {success_count}/{len(st.session_state.reg_cart)} 件登録完了！")
-                st.session_state.reg_cart           = []
-                st.session_state.new_search_results = []
-                st.session_state.new_search_done    = False
-                st.session_state.bulk_checked       = {}
-                st.session_state.album_tracks_cache = []
-                st.session_state.album_tracks_id    = None
-                time.sleep(1)
-                st.rerun()
+                CART_CLEAR_KEYS = ["reg_cart", "new_search_results", "new_search_done",
+                                   "bulk_checked", "album_tracks_cache", "album_tracks_id"]
+                for k in CART_CLEAR_KEYS:
+                    st.session_state.pop(k, None)
+                st.success(f"✅ {success_count}/{len(st.session_state.get('reg_cart', []))+success_count} 件登録完了！")
+                show_post_register_ui(media_label, CART_CLEAR_KEYS)
         with col_clear:
             if st.button("🗑 登録リストをクリア", key="cart_clear"):
                 st.session_state.reg_cart = []
