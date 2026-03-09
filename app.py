@@ -1268,7 +1268,7 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 st.image("assets/logo.png", width=320)
-st.caption("v4.47")
+st.caption("v4.48")
 
 for key, default in {
     "is_running":         False,
@@ -1511,6 +1511,24 @@ if mode == "新規登録":
                     ev_works = st.session_state.ev_mb_works
                     if "ev_mb_checked" not in st.session_state:
                         st.session_state.ev_mb_checked = {}
+
+                    # ── 前runでボタンが押された場合の追加処理（checkboxより先に実行）──
+                    _mb_add = st.session_state.pop("_ev_mb_add_action", None)
+                    _mb_titles = st.session_state.pop("_ev_mb_add_titles", [])
+                    if _mb_add == "main" and _mb_titles:
+                        current = [x for x in st.session_state.ev_setlist_main if x["title"].strip()]
+                        for title in _mb_titles:
+                            if len(current) < MAX_MAIN and title not in [x["title"] for x in current]:
+                                current.append({"title": title, "part": ""})
+                        empty = [{"title": "", "part": ""}]
+                        st.session_state.ev_setlist_main = current + empty if len(current) < MAX_MAIN else current
+                    elif _mb_add == "enc" and _mb_titles:
+                        current_enc = [x for x in st.session_state.ev_setlist_encore if x["title"].strip()]
+                        for title in _mb_titles:
+                            if len(current_enc) < MAX_ENCORE and title not in [x["title"] for x in current_enc]:
+                                current_enc.append({"title": title, "part": ""})
+                        st.session_state.ev_setlist_encore = current_enc
+
                     st.caption(f"{len(ev_works)} 件の作品")
                     col_all2, col_none2 = st.columns([1, 1])
                     if col_all2.button("全選択", key="ev_mb_all"):
@@ -1520,39 +1538,26 @@ if mode == "新規登録":
                     if col_none2.button("全解除", key="ev_mb_none"):
                         st.session_state.ev_mb_checked = {}
                         st.rerun()
-                    # ── checkbox描画 → ev_mb_checked更新 → ev_sel_works確定 の順を厳守 ──
+                    # checkbox: keyなし・ev_mb_checked のみで状態管理
                     for w in ev_works:
                         label = w["title"] + (f"　{w['disambiguation']}" if w["disambiguation"] else "")
                         val = st.session_state.ev_mb_checked.get(w["id"], False)
-                        checked = st.checkbox(label, value=val, key=f"ev_mb_chk_{w['id']}")
-                        # widgetのkeyからセッションステートを読む（keyあり方式に戻す）
-                        st.session_state.ev_mb_checked[w["id"]] = st.session_state.get(f"ev_mb_chk_{w['id']}", val)
-                    # checkboxループ完了後にev_sel_worksを確定
+                        checked = st.checkbox(label, value=val)
+                        st.session_state.ev_mb_checked[w["id"]] = checked
                     ev_sel_works = [w for w in ev_works if st.session_state.ev_mb_checked.get(w["id"])]
                     if ev_sel_works:
                         st.info(f"{len(ev_sel_works)} 曲選択中")
                         col_add_main, col_add_enc = st.columns([1, 1])
                         if col_add_main.button("📋 通常セトリに追加", key="ev_mb_add_main"):
-                            current = [x for x in st.session_state.ev_setlist_main if x["title"].strip()]
-                            for w in ev_sel_works:
-                                if len(current) < MAX_MAIN and w["title"] not in [x["title"] for x in current]:
-                                    current.append({"title": w["title"], "part": ""})
-                            empty = [{"title": "", "part": ""}]
-                            st.session_state.ev_setlist_main = current + empty if len(current) < MAX_MAIN else current
-                            # ev_mb_checkedとwidgetキー両方をFalseに
-                            st.session_state.ev_mb_checked = {w["id"]: False for w in ev_works}
-                            for w in ev_works:
-                                st.session_state[f"ev_mb_chk_{w['id']}"] = False
+                            # タイトルを退避してrerun → 次run冒頭で処理
+                            st.session_state["_ev_mb_add_action"] = "main"
+                            st.session_state["_ev_mb_add_titles"] = [w["title"] for w in ev_sel_works]
+                            st.session_state.ev_mb_checked = {}
                             st.rerun()
                         if col_add_enc.button("🎊 アンコールに追加", key="ev_mb_add_enc"):
-                            current_enc = [x for x in st.session_state.ev_setlist_encore if x["title"].strip()]
-                            for w in ev_sel_works:
-                                if len(current_enc) < MAX_ENCORE and w["title"] not in [x["title"] for x in current_enc]:
-                                    current_enc.append({"title": w["title"], "part": ""})
-                            st.session_state.ev_setlist_encore = current_enc
-                            st.session_state.ev_mb_checked = {w["id"]: False for w in ev_works}
-                            for w in ev_works:
-                                st.session_state[f"ev_mb_chk_{w['id']}"] = False
+                            st.session_state["_ev_mb_add_action"] = "enc"
+                            st.session_state["_ev_mb_add_titles"] = [w["title"] for w in ev_sel_works]
+                            st.session_state.ev_mb_checked = {}
                             st.rerun()
 
             # ── ライブ/ショー: iTunes検索 ──
