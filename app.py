@@ -1102,38 +1102,43 @@ if mode == "新規登録":
         test_name    = st.text_input("場所名", value="フェニーチェ堺", key="dev_place_name")
         test_address = st.text_input("住所（任意）", value="大阪府堺市", key="dev_place_address")
 
+        # UUID正規化（ハイフンなし32桁 → ハイフンあり標準形式に変換）
+        def normalize_uuid(raw: str) -> str:
+            s = raw.strip().replace("-", "")
+            if len(s) == 32:
+                return f"{s[0:8]}-{s[8:12]}-{s[12:16]}-{s[16:20]}-{s[20:32]}"
+            return raw.strip()
+
+        page_id_normalized = normalize_uuid(test_page_id) if test_page_id else ""
+        if test_page_id:
+            st.caption(f"正規化済みID: `{page_id_normalized}`")
+
+        def run_patch(payload):
+            url = f"https://api.notion.com/v1/pages/{page_id_normalized}"
+            st.caption(f"→ PATCH {url}")
+            try:
+                res = requests.patch(url, headers=NOTION_HEADERS, json=payload, timeout=10)
+                st.write(f"ステータス: {res.status_code}")
+                st.json(res.json())
+            except Exception as e:
+                st.error(f"例外: {e}")
+
         col_a, col_b, col_c = st.columns(3)
 
-        # パターンA: name + address
         if col_a.button("A: name+address", key="dev_place_a"):
-            payload = {"properties": {"ロケーション": {"place": {
-                "name":    test_name,
-                "address": test_address,
-            }}}}
-            res = api_request("patch", f"https://api.notion.com/v1/pages/{test_page_id}",
-                              headers=NOTION_HEADERS, json=payload)
-            st.write(f"ステータス: {res.status_code if res else 'None'}")
-            st.json(res.json() if res else {})
+            run_patch({"properties": {"ロケーション": {"place": {
+                "name": test_name, "address": test_address,
+            }}}})
 
-        # パターンB: nameのみ
         if col_b.button("B: nameのみ", key="dev_place_b"):
-            payload = {"properties": {"ロケーション": {"place": {
+            run_patch({"properties": {"ロケーション": {"place": {
                 "name": test_name,
-            }}}}
-            res = api_request("patch", f"https://api.notion.com/v1/pages/{test_page_id}",
-                              headers=NOTION_HEADERS, json=payload)
-            st.write(f"ステータス: {res.status_code if res else 'None'}")
-            st.json(res.json() if res else {})
+            }}}})
 
-        # パターンC: rich_text型として渡してみる（フォールバック確認）
         if col_c.button("C: rich_textで渡す", key="dev_place_c"):
-            payload = {"properties": {"ロケーション": {"rich_text": [
+            run_patch({"properties": {"ロケーション": {"rich_text": [
                 {"type": "text", "text": {"content": test_name}}
-            ]}}}
-            res = api_request("patch", f"https://api.notion.com/v1/pages/{test_page_id}",
-                              headers=NOTION_HEADERS, json=payload)
-            st.write(f"ステータス: {res.status_code if res else 'None'}")
-            st.json(res.json() if res else {})
+            ]}}})
     # ── 🔬 実験ここまで ──
 
 
