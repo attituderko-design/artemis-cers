@@ -1151,7 +1151,7 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 st.image("assets/logo.png", width=320)
-st.caption("v3.4")
+st.caption("v3.5")
 
 for key, default in {
     "is_running":         False,
@@ -1232,6 +1232,14 @@ with st.sidebar:
             st.session_state.is_running = True
             st.session_state.sync_mode  = "normal"
             st.rerun()
+        st.caption("リフレッシュ対象媒体（未選択=全媒体）")
+        REFRESH_MEDIA_OPTIONS = ["映画", "ドラマ", "書籍", "漫画", "音楽アルバム", "ゲーム", "演奏曲", "展示会", "ライブ/ショー"]
+        st.session_state.refresh_media_filter = st.multiselect(
+            "媒体フィルタ",
+            options=REFRESH_MEDIA_OPTIONS,
+            default=st.session_state.get("refresh_media_filter", []),
+            label_visibility="collapsed",
+        )
         if st.button("🔄 リフレッシュ", use_container_width=True, disabled=not st.session_state.pages_loaded):
             st.session_state.is_running = True
             st.session_state.sync_mode  = "refresh"
@@ -1887,7 +1895,15 @@ if delete_btn:
 if mode == "自動同期" and st.session_state.is_running:
     is_refresh   = (st.session_state.sync_mode == "refresh")
     if is_refresh:
-        sync_targets = st.session_state.all_pages if st.session_state.all_pages else target_pages
+        base_targets = st.session_state.all_pages if st.session_state.all_pages else target_pages
+        media_filter = st.session_state.get("refresh_media_filter", [])
+        if media_filter:
+            sync_targets = [
+                p for p in base_targets
+                if any(m["name"] in media_filter for m in p["properties"].get("媒体", {}).get("multi_select", []))
+            ]
+        else:
+            sync_targets = base_targets
     else:
         sync_targets = get_display_pages()
     label_mode   = "🔄 リフレッシュ" if is_refresh else "⚙️ 自動同期"
