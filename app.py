@@ -1274,7 +1274,7 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 st.image("assets/logo.png", width=320)
-st.caption("v4.42")
+st.caption("v4.43")
 
 for key, default in {
     "is_running":         False,
@@ -1461,7 +1461,7 @@ if mode == "新規登録":
 
             # セッションステート初期化
             # 構造: [{"title": "曲名", "part": "Vn."}]  ※part は演奏会（出演）のみ使用
-            if "ev_setlist_main"   not in st.session_state: st.session_state.ev_setlist_main   = [{"title": "", "part": ""}]
+            if "ev_setlist_main"   not in st.session_state: st.session_state.ev_setlist_main   = []
             if "ev_setlist_encore" not in st.session_state: st.session_state.ev_setlist_encore = []
 
             # ── 演奏会系: MusicBrainz検索 ──
@@ -1627,12 +1627,13 @@ if mode == "新規登録":
                     st.session_state.ev_setlist_main = [x for j, x in enumerate(new_main) if j != i]
                     st.rerun()
             st.session_state.ev_setlist_main = new_main
-            if len([x for x in new_main if x["title"].strip()]) < MAX_MAIN:
-                # 末尾が既に空欄の場合は追加しない
+            filled_main = [x for x in new_main if x["title"].strip()]
+            if len(filled_main) < MAX_MAIN:
+                # 末尾が既に空欄の場合はボタンを出さない
                 last_empty = new_main and not new_main[-1]["title"].strip()
                 if not last_empty:
                     if st.button("＋ 曲を追加", key="ev_main_add"):
-                        st.session_state.ev_setlist_main = [x for x in new_main if x["title"].strip()] + [{"title": "", "part": ""}]
+                        st.session_state.ev_setlist_main = filled_main + [{"title": "", "part": ""}]
                         st.rerun()
 
             st.caption(f"🎊 アンコール（最大{MAX_ENCORE}曲）")
