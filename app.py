@@ -524,9 +524,8 @@ def get_composer_portrait_url(composer_name: str, artist_id: str) -> str | None:
     return None
 
 
-@st.cache_data(ttl=3600)
-def search_mb_composer(name: str) -> list:
-    """作曲家名でMusicBrainzのartistを検索"""
+def search_mb_composer(name: str) -> tuple[list, str | None]:
+    """作曲家名でMusicBrainzのartistを検索。(results, error_msg)を返す"""
     try:
         res = requests.get(
             "https://musicbrainz.org/ws/2/artist",
@@ -534,21 +533,19 @@ def search_mb_composer(name: str) -> list:
             headers=MB_HEADERS, timeout=8,
         )
         if res.status_code != 200:
-            return []
+            return [], f"MusicBrainz API {res.status_code}: {res.text[:100]}"
         artists = res.json().get("artists", [])
-        # クラシック作曲家に絞る（タグにclassicalを含むものを優先）
         return [
             {
-                "id":   a["id"],
-                "name": a["name"],
+                "id":             a["id"],
+                "name":           a["name"],
                 "disambiguation": a.get("disambiguation", ""),
-                "life_span": a.get("life-span", {}).get("begin", "")[:4],
+                "life_span":      a.get("life-span", {}).get("begin", "")[:4],
             }
             for a in artists
-        ]
+        ], None
     except Exception as e:
-        st.warning(f"⚠️ MusicBrainz API エラー: {e}")
-        return []
+        return [], str(e)
 
 
 @st.cache_data(ttl=3600)
@@ -999,7 +996,7 @@ def build_update_log(log_title, src, need_notion, notion_ok, need_drive, drive_o
 
 st.set_page_config(page_title="ArtéMis", page_icon="assets/favicon.png", layout="wide")
 st.image("assets/logo.png", width=320)
-st.caption("v2.08")
+st.caption("v2.09")
 
 for key, default in {
     "is_running":         False,
@@ -1199,11 +1196,15 @@ if mode == "新規登録":
         if st.button("🔍 検索", key="mb_composer_search"):
             if composer_input:
                 with st.spinner("作曲家を検索中..."):
-                    composers = search_mb_composer(composer_input)
+                    composers, err = search_mb_composer(composer_input)
+                if err:
+                    st.error(f"⚠️ MusicBrainz API エラー: {err}")
                 st.session_state.mb_composers     = composers
                 st.session_state.mb_works         = []
                 st.session_state.mb_title_filter  = title_filter
                 st.session_state.mb_selected_comp = None
+                if not composers and not err:
+                    st.warning("作曲家が見つかりませんでした。")
             else:
                 st.warning("作曲家名を入力してください")
 
