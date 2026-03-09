@@ -589,7 +589,7 @@ def search_mb_works(artist_id: str, title_filter: str = "") -> list:
         # 親workを持つ（= 楽章・部分）はスキップ
         relations = w.get("relations", [])
         is_part = any(
-            r.get("type") == "parts" and r.get("direction") == "backward"
+            r.get("type") in ("part of", "parts", "medley") and r.get("direction") == "backward"
             for r in relations
         )
         if is_part:
@@ -1006,7 +1006,7 @@ def build_update_log(log_title, src, need_notion, notion_ok, need_drive, drive_o
 
 st.set_page_config(page_title="ArtéMis", page_icon="assets/favicon.png", layout="wide")
 st.image("assets/logo.png", width=320)
-st.caption("v2.11")
+st.caption("v2.12")
 
 for key, default in {
     "is_running":         False,
