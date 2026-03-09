@@ -53,7 +53,11 @@ def get_media_icon_url(media_label: str) -> str:
 # 登録完了後UI（共通）
 # ============================================================
 COMMON_CLEAR_KEYS = ["new_search_results", "new_search_done", "confirm_reg", "bulk_checked",
-                     "reg_cart", "prev_media_label"]
+                     "reg_cart", "prev_media_label",
+                     "ev_setlist_main", "ev_setlist_encore",
+                     "ev_mb_composers", "ev_mb_works", "ev_mb_selected", "ev_mb_title_filter",
+                     "ev_it_results", "ev_mb_checked",
+                     "ev_composer", "ev_title_filter", "ev_it_artist", "ev_it_title"]
 
 def show_post_register_ui(media_label: str, clear_keys: list):
     """登録完了後に「続けて登録」「終了」ボタンを表示する共通コンポーネント"""
@@ -1268,7 +1272,7 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 st.image("assets/logo.png", width=320)
-st.caption("v4.5")
+st.caption("v4.51")
 
 for key, default in {
     "is_running":         False,
@@ -1387,12 +1391,16 @@ if mode == "新規登録":
     elif _post_action == "end":
         for k in _post_clear + COMMON_CLEAR_KEYS:
             st.session_state.pop(k, None)
-        st.session_state["reg_media"] = "（媒体を選択してください）"
+        st.session_state.pop("reg_media", None)
+        st.session_state["_reg_media_reset"] = True
 
     # ── 媒体選択 ──
     MEDIA_SELECT_PLACEHOLDER = "（媒体を選択してください）"
     media_options = [MEDIA_SELECT_PLACEHOLDER] + [v[0] for v in MEDIA_ICON_MAP.values()]
-    media_display = st.selectbox("媒体 *", media_options, key="reg_media")
+    # "end"アクション後はindex=0（プレースホルダー）に戻す
+    _media_reset = st.session_state.pop("_reg_media_reset", False)
+    _media_index = 0 if _media_reset else None
+    media_display = st.selectbox("媒体 *", media_options, key="reg_media", index=_media_index)
 
     if media_display == MEDIA_SELECT_PLACEHOLDER:
         st.stop()
