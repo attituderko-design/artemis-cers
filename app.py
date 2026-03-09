@@ -1122,6 +1122,19 @@ def build_update_log(log_title, src, need_notion, notion_ok, need_drive, drive_o
 # ============================================================
 
 st.set_page_config(page_title="ArtéMis", page_icon="assets/favicon.png", layout="wide")
+
+# ── PWA対応 metaタグ ──
+st.markdown("""
+<head>
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="ArtéMis">
+<meta name="theme-color" content="#0e1117">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
+<link rel="apple-touch-icon" href="https://raw.githubusercontent.com/attituderko-design/artemis-cers/main/assets/favicon.png">
+</head>
+""", unsafe_allow_html=True)
+
 st.image("assets/logo.png", width=320)
 st.caption("v3.1")
 
