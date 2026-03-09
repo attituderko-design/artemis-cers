@@ -1202,8 +1202,14 @@ if mode == "新規登録":
     st.subheader("➕ 新規登録")
 
     # ── 媒体選択 ──
-    media_display = st.selectbox("媒体", [v[0] for v in MEDIA_ICON_MAP.values()], key="reg_media")
-    media_label   = next(k for k, v in MEDIA_ICON_MAP.items() if v[0] == media_display)
+    MEDIA_SELECT_PLACEHOLDER = "（媒体を選択してください）"
+    media_options = [MEDIA_SELECT_PLACEHOLDER] + [v[0] for v in MEDIA_ICON_MAP.values()]
+    media_display = st.selectbox("媒体 *", media_options, key="reg_media")
+
+    if media_display == MEDIA_SELECT_PLACEHOLDER:
+        st.stop()
+
+    media_label = next(k for k, v in MEDIA_ICON_MAP.items() if v[0] == media_display)
 
     # ── 媒体変更時にリセット ──
     if st.session_state.prev_media_label != media_label:
