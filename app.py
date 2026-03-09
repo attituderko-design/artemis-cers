@@ -473,12 +473,13 @@ def get_openlibrary_cover(isbn: str) -> str:
         pass
     return ""
 
-def search_books(query: str, author: str = None) -> list:
+def search_books(query: str, author: str = None, page: int = 1) -> list:
     """楽天ブックスAPIで書籍検索"""
     rk_params = {
         "applicationId": RAKUTEN_APP_ID,
         "accessKey":     st.secrets.get("RAKUTEN_ACCESS_KEY", ""),
         "hits":          30,
+        "page":          page,
         "formatVersion": 2,
         "sort":          "sales",
         "outOfStockFlag": 1,
@@ -874,12 +875,13 @@ def fetch_itunes_tracks(collection_id: int) -> list:
 # ============================================================
 # 漫画（楽天ブックス コミックジャンル）
 # ============================================================
-def search_manga(query: str, author: str = None) -> list:
+def search_manga(query: str, author: str = None, page: int = 1) -> list:
     rk_params = {
         "applicationId": RAKUTEN_APP_ID,
         "accessKey":     st.secrets.get("RAKUTEN_ACCESS_KEY", ""),
         "booksGenreId":  "001001",   # コミック・ラノベ
         "hits":          30,
+        "page":          page,
         "formatVersion": 2,
         "sort":          "sales",
         "outOfStockFlag": 1,
@@ -1375,12 +1377,14 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 st.image("assets/logo.png", width=320)
-st.caption("v4.70")
+st.caption("v4.71")
 
 for key, default in {
     "is_running":         False,
     "pages_loaded":       False,
     "new_search_excluded": [],
+    "rakuten_page":        1,
+    "rakuten_query_key":   "",
     "pages":              [],
     "all_pages":          [],
     "search_results":     {},
@@ -1935,6 +1939,8 @@ if mode == "新規登録":
             st.session_state.new_search_done     = True
             st.session_state.confirm_reg         = None
             st.session_state.bulk_checked        = {}
+            st.session_state.rakuten_page        = 1
+            st.session_state.rakuten_query_key   = f"{media_label}|{query}|{creator_input}"
         else:
             st.warning("タイトルまたはクリエイター名を入力してください")
 
@@ -2234,6 +2240,36 @@ if mode == "新規登録":
                 st.session_state.bulk_checked = {}
                 st.success(f"✅ {len(checked_indices)} 件を登録リストに追加しました")
                 st.rerun()
+
+    # ── 書籍・漫画：次のページ取得 ──
+    if st.session_state.new_search_done and media_label in ("書籍", "漫画"):
+        st.divider()
+        next_page = st.session_state.rakuten_page + 1
+        if st.button(f"📖 次の30件を取得（{next_page}ページ目）", key="rakuten_next_page"):
+            with st.spinner(f"{next_page}ページ目を取得中..."):
+                q_key = st.session_state.rakuten_query_key
+                parts = q_key.split("|") if q_key else ["", "", ""]
+                _media, _query, _author = parts[0], parts[1], parts[2] if len(parts) > 2 else ""
+                if media_label == "書籍":
+                    new_results = search_books(_query or "", author=_author or None, page=next_page)
+                else:
+                    new_results = search_manga(_query or "", author=_author or None, page=next_page)
+                if new_results:
+                    reg_ids = get_registered_ids(st.session_state.pages)
+                    filtered, excluded = filter_registered(new_results, media_label, reg_ids)
+                    # 既存結果に追記（タイトル重複除去）
+                    existing_titles = {c.get("title", "") for c in st.session_state.new_search_results}
+                    added = [c for c in filtered if c.get("title", "") not in existing_titles]
+                    st.session_state.new_search_results  = st.session_state.new_search_results + added
+                    st.session_state.new_search_excluded = st.session_state.new_search_excluded + excluded
+                    st.session_state.rakuten_page        = next_page
+                    if added:
+                        st.success(f"✅ {len(added)} 件追加（除外: {len(excluded)} 件）")
+                    else:
+                        st.info("新しい結果はありませんでした")
+                    st.rerun()
+                else:
+                    st.info("これ以上の結果はありません")
 
     # ── 登録リスト確認・編集・一括登録 ──
     if st.session_state.reg_cart:
