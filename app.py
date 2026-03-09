@@ -439,6 +439,91 @@ MB_HEADERS = {
 }
 MB_DEFAULT_COVER = "https://raw.githubusercontent.com/attituderko-design/artemis-cers/refs/heads/main/assets/icons/music-score.svg"
 
+def make_portrait_filename(composer_name: str) -> str:
+    return f"portrait_{sanitize_filename(composer_name)}.jpg"
+
+def get_composer_portrait_url(composer_name: str, artist_id: str) -> str | None:
+    """
+    1. Driveに既存の肖像画があればそのURLを返す
+    2. なければMusicBrainz → Wikipedia APIで取得してDriveに保存
+    3. 取得できなければNoneを返す
+    """
+    fname = make_portrait_filename(composer_name)
+    files = get_drive_files()
+
+    # Drive既存チェック
+    if fname in files:
+        file_id = files[fname]
+        try:
+            service = get_drive_service()
+            service.permissions().create(fileId=file_id, body={"role": "reader", "type": "anyone"}).execute()
+            return f"https://drive.google.com/uc?id={file_id}"
+        except Exception:
+            pass
+
+    # MusicBrainzからWikipedia URL取得
+    try:
+        time.sleep(1.1)
+        res = requests.get(
+            f"https://musicbrainz.org/ws/2/artist/{artist_id}",
+            params={"inc": "url-rels", "fmt": "json"},
+            headers=MB_HEADERS, timeout=8,
+        )
+        if res.status_code != 200:
+            return None
+        relations = res.json().get("relations", [])
+        wiki_url = None
+        for r in relations:
+            if r.get("type") == "wikipedia" and r.get("url", {}).get("resource", ""):
+                wiki_url = r["url"]["resource"]
+                break
+        if not wiki_url:
+            return None
+
+        # Wikipedia APIで肖像画取得（URLからページタイトルを抽出）
+        wiki_title = wiki_url.rstrip("/").split("/")[-1]
+        wiki_res = requests.get(
+            "https://en.wikipedia.org/w/api.php",
+            params={
+                "action":      "query",
+                "titles":      wiki_title,
+                "prop":        "pageimages",
+                "pithumbsize": 600,
+                "format":      "json",
+            },
+            timeout=8,
+        )
+        if wiki_res.status_code != 200:
+            return None
+        pages = wiki_res.json().get("query", {}).get("pages", {})
+        img_url = None
+        for page in pages.values():
+            img_url = page.get("thumbnail", {}).get("source")
+            if img_url:
+                break
+        if not img_url:
+            return None
+
+        # Driveに保存してパブリックURLを返す
+        img_data = requests.get(img_url, timeout=8)
+        if img_data.status_code != 200:
+            return None
+        service = get_drive_service()
+        media   = MediaIoBaseUpload(io.BytesIO(img_data.content), mimetype="image/jpeg", resumable=False)
+        result  = service.files().create(
+            body={"name": fname, "parents": [DRIVE_FOLDER_ID]},
+            media_body=media, fields="id",
+        ).execute()
+        file_id = result["id"]
+        st.session_state.drive_files_cache[fname] = file_id
+        service.permissions().create(fileId=file_id, body={"role": "reader", "type": "anyone"}).execute()
+        return f"https://drive.google.com/uc?id={file_id}"
+
+    except Exception as e:
+        st.warning(f"⚠️ 肖像画取得エラー ({composer_name}): {e}")
+    return None
+
+
 @st.cache_data(ttl=3600)
 def search_mb_composer(name: str) -> list:
     """作曲家名でMusicBrainzのartistを検索"""
@@ -914,7 +999,7 @@ def build_update_log(log_title, src, need_notion, notion_ok, need_drive, drive_o
 
 st.set_page_config(page_title="ArtéMis", page_icon="assets/favicon.png", layout="wide")
 st.image("assets/logo.png", width=320)
-st.caption("v2.07")
+st.caption("v2.08")
 
 for key, default in {
     "is_running":         False,
@@ -934,6 +1019,8 @@ for key, default in {
     "mb_checked":         {},
     "mb_selected_comp":   None,
     "mb_title_filter":    "",
+    "mb_portrait_url":    None,
+    "mb_portrait_comp":   None,
 }.items():
     if key not in st.session_state:
         st.session_state[key] = default
@@ -1163,13 +1250,52 @@ if mode == "新規登録":
             selected_works = [w for w in works if st.session_state.mb_checked.get(w["id"])]
             if selected_works:
                 st.info(f"{len(selected_works)} 件選択中")
+
+                # 肖像画取得（Drive既存チェック → Wikipedia取得 → アップロード）
+                comp_name  = comp.get("name", "")
+                artist_id  = comp.get("id", "")
+                fname_port = make_portrait_filename(comp_name)
+
+                if "mb_portrait_url" not in st.session_state or st.session_state.get("mb_portrait_comp") != artist_id:
+                    with st.spinner(f"🖼️ {comp_name} の肖像画を取得中..."):
+                        portrait_url = get_composer_portrait_url(comp_name, artist_id)
+                    st.session_state.mb_portrait_url  = portrait_url
+                    st.session_state.mb_portrait_comp = artist_id
+                else:
+                    portrait_url = st.session_state.mb_portrait_url
+
+                if portrait_url:
+                    st.image(portrait_url, width=120, caption=f"{comp_name}")
+                    cover_url_final = portrait_url
+                else:
+                    st.warning(f"⚠️ {comp_name} の肖像画が見つかりませんでした。画像をアップロードしてください。")
+                    uploaded = st.file_uploader("肖像画をアップロード", type=["jpg", "jpeg", "png"], key="mb_portrait_upload")
+                    if uploaded:
+                        img_bytes = uploaded.read()
+                        mimetype  = "image/png" if uploaded.name.endswith(".png") else "image/jpeg"
+                        with st.spinner("Driveに保存中..."):
+                            service = get_drive_service()
+                            media   = MediaIoBaseUpload(io.BytesIO(img_bytes), mimetype=mimetype, resumable=False)
+                            result  = service.files().create(
+                                body={"name": fname_port, "parents": [DRIVE_FOLDER_ID]},
+                                media_body=media, fields="id",
+                            ).execute()
+                            file_id = result["id"]
+                            st.session_state.drive_files_cache[fname_port] = file_id
+                            service.permissions().create(fileId=file_id, body={"role": "reader", "type": "anyone"}).execute()
+                            cover_url_final = f"https://drive.google.com/uc?id={file_id}"
+                            st.session_state.mb_portrait_url  = cover_url_final
+                            st.session_state.mb_portrait_comp = artist_id
+                        st.image(cover_url_final, width=120, caption=comp_name)
+                    else:
+                        cover_url_final = MB_DEFAULT_COVER
+
                 watched_date_mb = st.date_input("初演奏日", value=None, key="mb_date")
                 rating_mb       = st.selectbox("評価", RATING_OPTIONS, key="mb_rating")
 
                 if st.button(f"✅ {len(selected_works)} 件を一括登録", key="mb_bulk_reg"):
-                    comp_name = comp.get("name", "")
-                    progress  = st.progress(0)
-                    ok_count  = 0
+                    progress = st.progress(0)
+                    ok_count = 0
                     for i, w in enumerate(selected_works):
                         watched_str = watched_date_mb.isoformat() if watched_date_mb else None
                         ok = create_notion_page(
@@ -1178,7 +1304,7 @@ if mode == "新規登録":
                             media_type_label="演奏曲",
                             tmdb_id=0,
                             media_type="score",
-                            cover_url=MB_DEFAULT_COVER,
+                            cover_url=cover_url_final,
                             tmdb_release="",
                             details={"genres": [], "cast": "", "director": comp_name, "score": None},
                             wlflg=False,
