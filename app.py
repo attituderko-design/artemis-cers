@@ -52,7 +52,7 @@ def get_media_icon_url(media_label: str) -> str:
 # ============================================================
 # 登録完了後UI（共通）
 # ============================================================
-def show_post_register_ui(media_label: str, clear_keys: list):
+def show_post_register_ui():
     """登録完了後UIの共通コンポーネント"""
     st.success("✅ 登録完了！")
     if st.button("🔄 新しく登録する", type="primary", key="post_reg_reset"):
@@ -1259,7 +1259,7 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 st.image("assets/logo.png", width=320)
-st.caption("v4.52")
+st.caption("v4.53")
 
 for key, default in {
     "is_running":         False,
@@ -1286,6 +1286,8 @@ for key, default in {
     "bulk_checked":       {},
     "album_tracks_cache": [],
     "album_tracks_id":    None,
+    "ev_setlist_main":    [],
+    "ev_setlist_encore":  [],
 }.items():
     if key not in st.session_state:
         st.session_state[key] = default
@@ -1422,7 +1424,6 @@ if mode == "新規登録":
             "ジャンル",
             placeholder="例: クラシック / 室内楽" if is_concert else "例: ロック / J-POP"
         )
-        event_part = ""
         if media_label == "展示会":
             col_start, col_end, col_watch = st.columns([1, 1, 1])
             event_start = col_start.date_input("開催開始日", value=None, key="ev_start")
@@ -1444,11 +1445,7 @@ if mode == "新規登録":
             MAX_MAIN   = 25
             MAX_ENCORE = 5
 
-            # セッションステート初期化
-            # 構造: [{"title": "曲名", "part": "Vn."}]  ※part は演奏会（出演）のみ使用
-            if "ev_setlist_main"   not in st.session_state: st.session_state.ev_setlist_main   = []
-            if "ev_setlist_encore" not in st.session_state: st.session_state.ev_setlist_encore = []
-
+            # セッションステート構造: [{"title": "曲名", "part": "Vn."}]  ※part は演奏会（出演）のみ使用
             def render_song_list(slot_key, max_count, label):
                 """曲リストUIを描画し、現在のリストを返す"""
                 songs = st.session_state[slot_key]
@@ -1487,29 +1484,7 @@ if mode == "新規登録":
             render_song_list("ev_setlist_main", MAX_MAIN, f"📋 通常セットリスト（最大{MAX_MAIN}曲）")
 
             # ── アンコール ──
-            st.caption(f"🎊 アンコール（最大{MAX_ENCORE}曲）")
-            enc_songs = st.session_state.ev_setlist_encore
-            new_enc = []
-            for i, item in enumerate(enc_songs):
-                if is_performance:
-                    c_num2, c_inp2, c_part2, c_del2 = st.columns([0.3, 3.5, 1.2, 0.5])
-                else:
-                    c_num2, c_inp2, c_del2 = st.columns([0.3, 4, 0.5])
-                c_num2.markdown(f"**{i+1}.**")
-                t2 = c_inp2.text_input("", value=item["title"], key=f"ev_setlist_encore_t_{i}", label_visibility="collapsed")
-                p2 = c_part2.text_input("", value=item["part"], key=f"ev_setlist_encore_p_{i}", placeholder="楽器", label_visibility="collapsed") if is_performance else ""
-                new_enc.append({"title": t2, "part": p2})
-                if c_del2.button("✕", key=f"ev_setlist_encore_del_{i}"):
-                    st.session_state.ev_setlist_encore = [x for j, x in enumerate(new_enc) if j != i]
-                    st.rerun()
-            if new_enc:
-                st.session_state.ev_setlist_encore = new_enc
-            filled_enc = [x for x in new_enc if x["title"].strip()]
-            last_enc_empty = new_enc and not new_enc[-1]["title"].strip()
-            if len(filled_enc) < MAX_ENCORE and not last_enc_empty:
-                if st.button("＋ アンコール曲を追加", key="ev_setlist_encore_add"):
-                    st.session_state.ev_setlist_encore = filled_enc + [{"title": "", "part": ""}]
-                    st.rerun()
+            render_song_list("ev_setlist_encore", MAX_ENCORE, f"🎊 アンコール（最大{MAX_ENCORE}曲）")
 
             # ── 楽曲検索（検索→ボタンで直接追加、チェックボックスなし）──
             st.divider()
@@ -1525,10 +1500,9 @@ if mode == "新規登録":
                             ev_composers, ev_err = search_mb_composer(ev_composer_input)
                         if ev_err:
                             st.error(f"⚠️ MusicBrainz API エラー: {ev_err}")
-                        st.session_state.ev_mb_composers    = ev_composers
-                        st.session_state.ev_mb_works        = []
-                        st.session_state.ev_mb_title_filter = ev_title_filter
-                        st.session_state.ev_mb_selected     = None
+                        st.session_state.ev_mb_composers = ev_composers
+                        st.session_state.ev_mb_works     = []
+                        st.session_state.ev_mb_filter    = ev_title_filter
                         if not ev_composers and not ev_err:
                             st.warning("作曲家が見つかりませんでした。")
                     else:
@@ -1543,9 +1517,8 @@ if mode == "新規登録":
                     ev_sel_idx = st.radio("作曲家を選択", range(len(ev_comp_labels)), format_func=lambda i: ev_comp_labels[i], key="ev_mb_comp_radio")
                     if st.button("この作曲家の作品一覧を取得", key="ev_mb_fetch_works"):
                         ev_sel_comp = ev_composers[ev_sel_idx]
-                        st.session_state.ev_mb_selected = ev_sel_comp
                         with st.spinner(f"{ev_sel_comp['name']} の作品を取得中..."):
-                            ev_works = search_mb_works(ev_sel_comp["id"], st.session_state.ev_mb_title_filter)
+                            ev_works = search_mb_works(ev_sel_comp["id"], st.session_state.get("ev_mb_filter", ""))
                         st.session_state.ev_mb_works = ev_works
 
                 if st.session_state.get("ev_mb_works"):
@@ -1635,13 +1608,11 @@ if mode == "新規登録":
                 location=event_location,
                 memo=memo_text,
             )
-            EVENT_CLEAR_KEYS = ["ev_mb_composers", "ev_mb_works", "ev_mb_checked", "ev_mb_selected",
-                                "ev_it_results", "ev_it_checked",
-                                "ev_setlist_main", "ev_setlist_encore"]
             if ok:
-                for key in EVENT_CLEAR_KEYS:
+                for key in ["ev_mb_composers", "ev_mb_works", "ev_mb_filter",
+                            "ev_it_results", "ev_setlist_main", "ev_setlist_encore"]:
                     st.session_state.pop(key, None)
-                show_post_register_ui(media_label, EVENT_CLEAR_KEYS)
+                show_post_register_ui()
             else:
                 st.error("❌ 登録失敗")
         st.stop()
@@ -1944,8 +1915,9 @@ if mode == "新規登録":
                         st.session_state.confirm_reg        = None
                         st.session_state.new_search_results = []
                         st.session_state.new_search_done    = False
-                        SINGLE_CLEAR_KEYS = ["confirm_reg", "new_search_results", "new_search_done", "bulk_checked"]
-                        show_post_register_ui(media_label, SINGLE_CLEAR_KEYS)
+                        for key in ["confirm_reg", "new_search_results", "new_search_done", "bulk_checked"]:
+                            st.session_state.pop(key, None)
+                        show_post_register_ui()
                     else:
                         st.error("❌ 登録失敗")
 
@@ -2188,12 +2160,11 @@ if mode == "新規登録":
                         success_count += 1
                     prog.progress((n + 1) / len(st.session_state.reg_cart))
                     time.sleep(0.3)
-                CART_CLEAR_KEYS = ["reg_cart", "new_search_results", "new_search_done",
-                                   "bulk_checked", "album_tracks_cache", "album_tracks_id"]
-                for k in CART_CLEAR_KEYS:
-                    st.session_state.pop(k, None)
-                st.success(f"✅ {success_count}/{len(st.session_state.get('reg_cart', []))+success_count} 件登録完了！")
-                show_post_register_ui(media_label, CART_CLEAR_KEYS)
+                for key in ["reg_cart", "new_search_results", "new_search_done",
+                            "bulk_checked", "album_tracks_cache", "album_tracks_id"]:
+                    st.session_state.pop(key, None)
+                st.success(f"✅ {success_count} 件登録完了！")
+                show_post_register_ui()
         with col_clear:
             if st.button("🗑 登録リストをクリア", key="cart_clear"):
                 st.session_state.reg_cart = []
