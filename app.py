@@ -95,6 +95,21 @@ def get_drive_service_safe():
 def sanitize_filename(name: str) -> str:
     return re.sub(r'[\\/:*?"<>|]', "_", name)
 
+def clearable_text_input(label: str, key: str, placeholder: str = "", value: str = "", container=None, **kwargs) -> str:
+    """× ボタン付き text_input。セッションステートで値を管理する。"""
+    ss_key = f"_cti_{key}"
+    if ss_key not in st.session_state:
+        st.session_state[ss_key] = value
+    # 外部から value が明示的に渡された場合（初期値設定）は上書きしない
+    inp_col, btn_col = (container or st).columns([10, 1])
+    val = inp_col.text_input(label, value=st.session_state[ss_key],
+                             placeholder=placeholder, key=key, **kwargs)
+    st.session_state[ss_key] = val
+    if btn_col.button("×", key=f"_clr_{key}", help="クリア"):
+        st.session_state[ss_key] = ""
+        st.rerun()
+    return st.session_state[ss_key]
+
 def clean_author(name: str) -> str:
     """著者名クリーニング: 接尾語除去 + スペース正規化（半角スペース1個に統一）"""
     name = re.sub(r'[（(][^）)]*[）)]', '', name)           # 括弧内除去
@@ -1377,7 +1392,7 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 st.image("assets/logo.png", width=320)
-st.caption("v4.71")
+st.caption("v4.72")
 
 for key, default in {
     "is_running":         False,
@@ -1885,33 +1900,33 @@ if mode == "新規登録":
 
     if media_label in ["音楽アルバム"]:
         col_jp, col_en = st.columns([1, 1])
-        jp_input      = col_jp.text_input("アルバム名", placeholder="例: 千のナイフ")
-        creator_input = col_en.text_input("アーティスト名", placeholder="例: 坂本龍一")
+        jp_input      = clearable_text_input("アルバム名", "inp_jp_album", placeholder="例: 千のナイフ", container=col_jp)
+        creator_input = clearable_text_input("アーティスト名", "inp_creator_album", placeholder="例: 坂本龍一", container=col_en)
         cast_input    = ""
         en_input      = ""
     elif media_label == "ゲーム":
-        jp_input      = st.text_input("ゲームタイトル", placeholder="例: ゼルダの伝説")
+        jp_input      = clearable_text_input("ゲームタイトル", "inp_jp_game", placeholder="例: ゼルダの伝説")
         creator_input = ""
         cast_input    = ""
         en_input      = jp_input
     elif media_label == "アニメ":
-        jp_input      = st.text_input("アニメタイトル", placeholder="例: 鬼滅の刃 / Demon Slayer")
+        jp_input      = clearable_text_input("アニメタイトル", "inp_jp_anime", placeholder="例: 鬼滅の刃 / Demon Slayer")
         creator_input = ""
         cast_input    = ""
         en_input      = jp_input
     elif media_label == "漫画":
         col_jp, col_en = st.columns([1, 1])
-        jp_input      = col_jp.text_input("タイトル", placeholder="例: 鬼滅の刃")
-        creator_input = col_en.text_input("著者名", placeholder="例: 吾峠呼世晴")
+        jp_input      = clearable_text_input("タイトル", "inp_jp_manga", placeholder="例: 鬼滅の刃", container=col_jp)
+        creator_input = clearable_text_input("著者名", "inp_creator_manga", placeholder="例: 吾峠呼世晴", container=col_en)
         cast_input    = ""
         en_input      = ""
     else:
         col_jp, col_en = st.columns([1, 1])
-        jp_input      = col_jp.text_input("日本語タイトル", placeholder="例: 千と千尋の神隠し")
-        en_input      = col_en.text_input("英語タイトル（検索用）", placeholder="例: Spirited Away")
+        jp_input      = clearable_text_input("日本語タイトル", "inp_jp_main", placeholder="例: 千と千尋の神隠し", container=col_jp)
+        en_input      = clearable_text_input("英語タイトル（検索用）", "inp_en_main", placeholder="例: Spirited Away", container=col_en)
         col_creator, col_cast = st.columns([1, 1])
-        creator_input = col_creator.text_input("クリエイター（著者・監督）", placeholder="例: 宮崎駿 / 道尾秀介")
-        cast_input    = col_cast.text_input("キャスト・関係者", placeholder="例: 木村拓哉")
+        creator_input = clearable_text_input("クリエイター（著者・監督）", "inp_creator_main", placeholder="例: 宮崎駿 / 道尾秀介", container=col_creator)
+        cast_input    = clearable_text_input("キャスト・関係者", "inp_cast_main", placeholder="例: 木村拓哉", container=col_cast)
 
     if st.button("🔍 検索", key="new_search"):
         query = en_input if en_input else jp_input
@@ -1955,8 +1970,8 @@ if mode == "新規登録":
                 st.image(reg["cover_url"])
             st.caption(f"{reg['cand_en']} ({reg['media_type']}) {reg['tmdb_release']} 🆔 {reg.get('tmdb_id','')}")
         with c2:
-            final_jp = st.text_input("日本語タイトル（修正可）", value=reg.get("jp_input", jp_input), key="final_jp")
-            final_en = st.text_input("英語タイトル（修正可）",   value=reg["cand_en"],                key="final_en")
+            final_jp = clearable_text_input("日本語タイトル（修正可）", "final_jp", value=reg.get("jp_input", jp_input))
+            final_en = clearable_text_input("英語タイトル（修正可）", "final_en", value=reg["cand_en"])
             if media_label in ("書籍", "漫画"):
                 final_isbn = st.text_input("ISBN", value=reg.get("isbn", ""), key="final_isbn")
             else:
@@ -2607,10 +2622,9 @@ if mode == "データ管理":
     if diff_filter != "フィルタなし":
         st.caption(f"差分フィルタ適用中: {diff_filter}")
 
-    search_query = st.text_input(
-        "🔎 タイトルで絞り込む",
+    search_query = clearable_text_input(
+        "🔎 タイトルで絞り込む", "manual_search_query",
         placeholder="日本語・英語どちらでも可（部分一致）",
-        key="manual_search_query",
     )
     if search_query:
         q_lower = search_query.lower()
@@ -2718,8 +2732,8 @@ if mode == "データ管理":
             existing_jp = jp or ""
             existing_en = en or ""
             title_c1, title_c2 = st.columns(2)
-            new_jp = title_c1.text_input("日本語タイトル", value=existing_jp, key=f"edit_jp_{page_id}")
-            new_en = title_c2.text_input("英語タイトル",   value=existing_en, key=f"edit_en_{page_id}")
+            new_jp = clearable_text_input("日本語タイトル", f"edit_jp_{page_id}", value=existing_jp, container=title_c1)
+            new_en = clearable_text_input("英語タイトル",   f"edit_en_{page_id}", value=existing_en, container=title_c2)
 
             # リリース日編集（全媒体）
             existing_release_edit = ((props.get("リリース日") or {}).get("date") or {}).get("start", "") or ""
@@ -2773,6 +2787,49 @@ if mode == "データ管理":
                         st.success("✅ セットリスト保存完了")
                     else:
                         st.error("❌ 保存失敗")
+
+            # ── ロケーション編集 ──
+            st.divider()
+            st.caption("📍 ロケーション")
+            location_search_ui(f"mgmt_{page_id}", page_media)
+
+            # ── カバー画像アップロード ──
+            st.divider()
+            st.caption("🖼 カバー画像を差し替え")
+            uploaded_cover = st.file_uploader(
+                "画像をアップロード（JPG / PNG）",
+                type=["jpg", "jpeg", "png"],
+                key=f"cover_upload_{page_id}",
+            )
+            if uploaded_cover is not None:
+                img_bytes = uploaded_cover.read()
+                mimetype  = "image/jpeg" if uploaded_cover.type == "image/jpeg" else "image/png"
+                st.image(img_bytes, width=160, caption="プレビュー")
+                if st.button("💾 Driveに保存してNotionに反映", key=f"save_cover_{page_id}"):
+                    with st.spinner("アップロード中..."):
+                        file_id = save_to_drive("", log_title, page_id, image_bytes=img_bytes, mimetype=mimetype)
+                        if file_id:
+                            public_url = f"https://drive.google.com/uc?id={file_id}"
+                            # Drive公開設定
+                            try:
+                                svc = get_drive_service_safe()
+                                svc.permissions().create(fileId=file_id, body={"role": "reader", "type": "anyone"}).execute()
+                            except Exception:
+                                pass
+                            # Notionカバー更新
+                            res = api_request("patch", f"https://api.notion.com/v1/pages/{page_id}",
+                                              headers=NOTION_HEADERS,
+                                              json={"cover": {"type": "external", "external": {"url": public_url}}})
+                            if res and res.status_code == 200:
+                                st.success(f"✅ カバーを更新しました")
+                                for p in st.session_state.pages:
+                                    if p["id"] == page_id:
+                                        p["cover"] = {"type": "external", "external": {"url": public_url}}
+                                st.rerun()
+                            else:
+                                st.error("❌ Notion更新失敗")
+                        else:
+                            st.error("❌ Drive保存失敗")
 
             # ── TMDB_ID修正（映画・ドラマ・アニメのみ） ──
             if is_tmdb_media:
@@ -2835,11 +2892,11 @@ if mode == "データ管理":
             if is_tmdb_media:
               default_query = re.sub(r'[Ss]eason\s*\d+', '', en if en else jp).strip()
               search_col, btn_col = st.columns([4, 1])
-              custom_query = search_col.text_input(
-                  "🔍 検索ワード",
+              custom_query = clearable_text_input(
+                  "🔍 検索ワード", f"custom_query_{page_id}",
                   value=default_query,
-                  key=f"custom_query_{page_id}",
                   placeholder="英語タイトルで検索すると精度UP",
+                  container=search_col,
               )
               with btn_col:
                   st.write("")
