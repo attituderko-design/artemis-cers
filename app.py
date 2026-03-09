@@ -339,18 +339,31 @@ def fetch_tmdb_by_id(tmdb_id: int, media_type: str) -> dict | None:
     data["media_type"] = media_type
     return data
 
-def search_tmdb(query: str, year=None) -> list:
+def search_tmdb(query: str, year=None, media_type: str = "multi") -> list:
+    """TMDB検索。media_type: 'movie' / 'tv' / 'multi'（multiは現在未使用・汎用性のため残存）"""
     params = {"api_key": TMDB_API_KEY, "query": query, "language": "en-US"}
-    if year:
-        params["primary_release_year"] = year
-    res = api_request("get", "https://api.themoviedb.org/3/search/multi", params=params)
+    if media_type == "movie":
+        if year:
+            params["primary_release_year"] = year
+        endpoint = "https://api.themoviedb.org/3/search/movie"
+    elif media_type == "tv":
+        endpoint = "https://api.themoviedb.org/3/search/tv"
+    else:
+        if year:
+            params["primary_release_year"] = year
+        endpoint = "https://api.themoviedb.org/3/search/multi"
+    res = api_request("get", endpoint, params=params)
     if res is None:
         return []
-    return [r for r in res.json().get("results", []) if r.get("poster_path") and r.get("media_type") in ["movie", "tv"]]
+    results = res.json().get("results", [])
+    if media_type in ("movie", "tv"):
+        for r in results:
+            r.setdefault("media_type", media_type)
+    return [r for r in results if r.get("poster_path") and r.get("media_type") in ["movie", "tv"]]
 
 
-def search_tmdb_by_person(person_query: str) -> list:
-    """クリエイター/キャスト名でTMDB人物検索→その人の作品一覧を返す"""
+def search_tmdb_by_person(person_query: str, media_type: str = "multi") -> list:
+    """クリエイター/キャスト名でTMDB人物検索→その人の作品一覧を返す。media_type: 'movie' / 'tv' / 'multi'（multiは現在未使用・汎用性のため残存）"""
     res = api_request("get", "https://api.themoviedb.org/3/search/person",
                       params={"api_key": TMDB_API_KEY, "query": person_query, "language": "en-US"})
     if res is None:
@@ -358,19 +371,30 @@ def search_tmdb_by_person(person_query: str) -> list:
     people = res.json().get("results", [])
     if not people:
         return []
-    # 最初にヒットした人物の出演・監督作品を取得
     person_id = people[0]["id"]
-    res2 = api_request("get", f"https://api.themoviedb.org/3/person/{person_id}/combined_credits",
-                       params={"api_key": TMDB_API_KEY, "language": "en-US"})
+    if media_type == "movie":
+        res2 = api_request("get", f"https://api.themoviedb.org/3/person/{person_id}/movie_credits",
+                           params={"api_key": TMDB_API_KEY, "language": "en-US"})
+        mt_filter = ["movie"]
+    elif media_type == "tv":
+        res2 = api_request("get", f"https://api.themoviedb.org/3/person/{person_id}/tv_credits",
+                           params={"api_key": TMDB_API_KEY, "language": "en-US"})
+        mt_filter = ["tv"]
+    else:
+        res2 = api_request("get", f"https://api.themoviedb.org/3/person/{person_id}/combined_credits",
+                           params={"api_key": TMDB_API_KEY, "language": "en-US"})
+        mt_filter = ["movie", "tv"]
     if res2 is None:
         return []
     credits = res2.json()
     works = credits.get("cast", []) + credits.get("crew", [])
-    # ポスターありのmovie/tvのみ、人気順で重複除去
+    for w in works:
+        if "media_type" not in w:
+            w["media_type"] = media_type if media_type != "multi" else "movie"
     seen_ids = set()
     results = []
     for w in sorted(works, key=lambda x: x.get("popularity", 0), reverse=True):
-        if w.get("poster_path") and w.get("media_type") in ["movie", "tv"] and w["id"] not in seen_ids:
+        if w.get("poster_path") and w.get("media_type") in mt_filter and w["id"] not in seen_ids:
             seen_ids.add(w["id"])
             results.append(w)
         if len(results) >= 20:
@@ -1450,10 +1474,11 @@ if mode == "新規登録":
             elif media_label == "ゲーム":
                 results = search_games(query or jp_input)
             else:
+                tmdb_mt = "movie" if media_label == "映画" else "tv"
                 if creator_input or cast_input:
-                    results = search_tmdb_by_person(creator_input or cast_input)
+                    results = search_tmdb_by_person(creator_input or cast_input, media_type=tmdb_mt)
                 else:
-                    results = search_tmdb(query)
+                    results = search_tmdb(query, media_type=tmdb_mt)
             st.session_state.new_search_results = results[:20]
             st.session_state.new_search_done    = True
             st.session_state.confirm_reg        = None
