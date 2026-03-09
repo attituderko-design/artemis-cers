@@ -1,6 +1,6 @@
 # 🌙 ArtéMis CERS
 
-**Cultural Experience Recording System**
+**Cultural Experience Record System**
 
 > Notion-based personal tracker for films, dramas, concerts, exhibitions, live shows, books, manga, music albums, games, and musical scores — with automatic metadata & poster fetching.
 >
