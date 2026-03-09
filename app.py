@@ -1006,7 +1006,7 @@ def build_update_log(log_title, src, need_notion, notion_ok, need_drive, drive_o
 
 st.set_page_config(page_title="ArtéMis", page_icon="assets/favicon.png", layout="wide")
 st.image("assets/logo.png", width=320)
-st.caption("v2.12")
+st.caption("v2.13")
 
 for key, default in {
     "is_running":         False,
@@ -1282,21 +1282,32 @@ if mode == "新規登録":
                     st.warning(f"⚠️ {comp_name} の肖像画が見つかりませんでした。画像をアップロードしてください。")
                     uploaded = st.file_uploader("肖像画をアップロード", type=["jpg", "jpeg", "png"], key="mb_portrait_upload")
                     if uploaded:
+                        default_fname = sanitize_filename(comp_name)
+                        custom_fname  = st.text_input(
+                            "Drive保存名（変更可）",
+                            value=default_fname,
+                            key="mb_portrait_fname",
+                            help="この名前でDriveに保存されます。デフォルト名のままにしておくと、次回以降この作曲家を選択した際に自動で使いまわせます。",
+                        )
+                        if custom_fname != default_fname:
+                            st.caption("⚠️ 名前を変更すると次回自動使用されません。このセッションのみ有効です。")
+                        save_fname = f"portrait_{custom_fname}.jpg"
                         img_bytes = uploaded.read()
                         mimetype  = "image/png" if uploaded.name.endswith(".png") else "image/jpeg"
                         with st.spinner("Driveに保存中..."):
                             service = get_drive_service()
                             media   = MediaIoBaseUpload(io.BytesIO(img_bytes), mimetype=mimetype, resumable=False)
                             result  = service.files().create(
-                                body={"name": fname_port, "parents": [DRIVE_FOLDER_ID]},
+                                body={"name": save_fname, "parents": [DRIVE_FOLDER_ID]},
                                 media_body=media, fields="id",
                             ).execute()
                             file_id = result["id"]
-                            st.session_state.drive_files_cache[fname_port] = file_id
+                            st.session_state.drive_files_cache[save_fname] = file_id
                             service.permissions().create(fileId=file_id, body={"role": "reader", "type": "anyone"}).execute()
                             cover_url_final = f"https://drive.google.com/uc?id={file_id}"
-                            st.session_state.mb_portrait_url  = cover_url_final
-                            st.session_state.mb_portrait_comp = artist_id
+                            if custom_fname == default_fname:
+                                st.session_state.mb_portrait_url  = cover_url_final
+                                st.session_state.mb_portrait_comp = artist_id
                         st.image(cover_url_final, width=120, caption=comp_name)
                     else:
                         cover_url_final = MB_DEFAULT_COVER
