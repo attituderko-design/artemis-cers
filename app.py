@@ -758,7 +758,9 @@ def search_anime(query: str) -> list:
             sd       = m.get("startDate", {})
             release  = ""
             if sd.get("year"):
-                release = f"{sd['year']}-{sd.get('month', 1):02d}-{sd.get('day', 1):02d}"
+                mm = sd.get("month") or 1
+                dd = sd.get("day") or 1
+                release = f"{sd['year']}-{mm:02d}-{dd:02d}"
             # 監督抽出（Director / Series Director）
             director = ""
             for edge in m.get("staff", {}).get("edges", []):
