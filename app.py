@@ -2183,6 +2183,8 @@ if mode == "新規登録":
                 success_count = 0
                 prog = st.progress(0)
                 for n, item in enumerate(st.session_state.reg_cart):
+                    if item.get("media_type") in ("book", "manga"):
+                        st.caption(f"🔍 DEBUG [{item['jp_title']}] isbn=`{item.get('isbn', '(なし)')}`")
                     ok = create_notion_page(
                         jp_title=item["jp_title"], en_title=item.get("en_title",""),
                         media_type_label=item.get("media_label", media_label),
