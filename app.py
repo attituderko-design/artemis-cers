@@ -1392,7 +1392,7 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 st.image("assets/logo.png", width=320)
-st.caption("v4.72")
+st.caption("v4.73")
 
 for key, default in {
     "is_running":         False,
@@ -1509,856 +1509,1004 @@ target_pages = st.session_state.pages
 # ============================================================
 if mode == "新規登録":
     st.subheader("➕ 新規登録")
+    tab_reg, tab_csv = st.tabs(["通常登録", "📥 CSVインポート"])
+
+    # ============================================================
+    # CSVインポートタブ
+    # ============================================================
+    with tab_csv:
+        VALID_MEDIA   = list(MEDIA_ICON_MAP.keys())
+        VALID_RATINGS = RATING_OPTIONS
+
+        # ── テンプレートダウンロード ──
+        import csv, io as _io
+        CSV_COLUMNS = ["媒体", "タイトル", "英語タイトル", "鑑賞日", "評価", "メモ", "場所"]
+        template_buf = _io.StringIO()
+        writer = csv.writer(template_buf)
+        writer.writerow(CSV_COLUMNS)
+        hint_row = [
+            "／".join(VALID_MEDIA[:4]) + "／…",
+            "例: 千と千尋の神隠し", "例: Spirited Away",
+            "YYYY-MM-DD", "／".join(r for r in VALID_RATINGS if r),
+            "自由記述", "例: 梅田ブルク7",
+        ]
+        writer.writerow(hint_row)
+        template_bytes = template_buf.getvalue().encode("utf-8-sig")
+        st.download_button(
+            "📄 テンプレートをダウンロード",
+            data=template_bytes,
+            file_name="artemis_import_template.csv",
+            mime="text/csv",
+            use_container_width=True,
+        )
+        st.caption("2行目はヒント行です。削除してからデータを入力してください。")
+        st.caption(f"有効な媒体値: {' / '.join(VALID_MEDIA)}")
+        st.caption(f"有効な評価値: {' / '.join(r for r in VALID_RATINGS if r)}")
+
+        st.divider()
+
+        # ── CSVアップロード ──
+        uploaded_csv = st.file_uploader("CSVファイルをアップロード", type=["csv"], key="csv_import_file")
+        if uploaded_csv:
+            import pandas as pd
+            try:
+                df = pd.read_csv(uploaded_csv, encoding="utf-8-sig", dtype=str).fillna("")
+            except Exception as e:
+                st.error(f"CSV読み込みエラー: {e}")
+                df = None
+
+            if df is not None:
+                missing_cols = [c for c in CSV_COLUMNS if c not in df.columns]
+                if missing_cols:
+                    st.error(f"列が不足しています: {missing_cols}")
+                else:
+                    # ── バリデーション ──
+                    errors, ok_rows = [], []
+                    for i, row in df.iterrows():
+                        row_num = i + 2  # ヘッダー行=1
+                        media = row["媒体"].strip()
+                        title = row["タイトル"].strip()
+                        date  = row["鑑賞日"].strip()
+                        rating = row["評価"].strip()
+                        if not media:
+                            errors.append(f"行{row_num}: 媒体が空です")
+                            continue
+                        if media not in VALID_MEDIA:
+                            errors.append(f"行{row_num}: 無効な媒体「{media}」")
+                            continue
+                        if not title:
+                            errors.append(f"行{row_num}: タイトルが空です")
+                            continue
+                        if date:
+                            import re as _re
+                            if not _re.match(r"^\d{4}-\d{2}-\d{2}$", date):
+                                errors.append(f"行{row_num}: 鑑賞日のフォーマットが不正「{date}」（YYYY-MM-DD）")
+                                continue
+                        if rating and rating not in VALID_RATINGS:
+                            errors.append(f"行{row_num}: 無効な評価「{rating}」")
+                            continue
+                        ok_rows.append({
+                            "media":   media,
+                            "title":   title,
+                            "en":      row["英語タイトル"].strip(),
+                            "date":    date or None,
+                            "rating":  rating or None,
+                            "memo":    row["メモ"].strip() or None,
+                            "location": row["場所"].strip() or None,
+                        })
+
+                    if errors:
+                        st.error(f"❌ {len(errors)} 件のエラー")
+                        for e in errors:
+                            st.caption(f"・{e}")
+
+                    st.success(f"✅ {len(ok_rows)} 件が登録可能")
+
+                    # ── プレビュー ──
+                    if ok_rows:
+                        with st.expander(f"登録内容プレビュー（{len(ok_rows)} 件）"):
+                            preview_df = pd.DataFrame(ok_rows).rename(columns={
+                                "media": "媒体", "title": "タイトル", "en": "英語タイトル",
+                                "date": "鑑賞日", "rating": "評価", "memo": "メモ", "location": "場所",
+                            })
+                            st.dataframe(preview_df, use_container_width=True)
+
+                        if st.button(f"🚀 {len(ok_rows)} 件をNotionに登録", type="primary", key="csv_bulk_register"):
+                            prog    = st.progress(0)
+                            success = 0
+                            fail    = 0
+                            reg_ids = get_registered_ids(st.session_state.pages)
+                            for n, r in enumerate(ok_rows):
+                                # 重複チェック（タイトル×媒体）
+                                existing = [
+                                    p for p in st.session_state.pages
+                                    if get_page_media(p) == r["media"]
+                                    and get_title(p["properties"])[1] == r["title"]
+                                ]
+                                if existing:
+                                    st.caption(f"⏩ スキップ（登録済み）: {r['title']}")
+                                    prog.progress((n + 1) / len(ok_rows))
+                                    continue
+                                icon_url = get_media_icon_url(r["media"])
+                                ok = create_notion_page(
+                                    jp_title=r["title"], en_title=r["en"],
+                                    media_type_label=r["media"],
+                                    tmdb_id=0, media_type="",
+                                    cover_url=icon_url,
+                                    tmdb_release="", details={"genres": [], "cast": "", "director": "", "score": None},
+                                    watched_date=r["date"],
+                                    rating=r["rating"],
+                                    memo=r["memo"],
+                                    location=r["location"],
+                                )
+                                if ok:
+                                    success += 1
+                                else:
+                                    fail += 1
+                                    st.caption(f"❌ 登録失敗: {r['title']}")
+                                prog.progress((n + 1) / len(ok_rows))
+                                import time as _time
+                                _time.sleep(0.3)
+                            st.success(f"✅ {success} 件登録完了" + (f"　❌ {fail} 件失敗" if fail else ""))
+                            # pages再取得
+                            all_pages = load_notion_data()
+                            st.session_state.all_pages    = all_pages
+                            st.session_state.pages        = filter_target_pages(all_pages)
+
+    # ============================================================
+    # 通常登録タブ
+    # ============================================================
+    with tab_reg:
 
     # ── 媒体選択 ──
-    MEDIA_SELECT_PLACEHOLDER = "（媒体を選択してください）"
-    media_options = [MEDIA_SELECT_PLACEHOLDER] + [v[0] for v in MEDIA_ICON_MAP.values()]
-    media_display = st.selectbox("媒体 *", media_options, key="reg_media")
+        MEDIA_SELECT_PLACEHOLDER = "（媒体を選択してください）"
+        media_options = [MEDIA_SELECT_PLACEHOLDER] + [v[0] for v in MEDIA_ICON_MAP.values()]
+        media_display = st.selectbox("媒体 *", media_options, key="reg_media")
 
-    if media_display == MEDIA_SELECT_PLACEHOLDER:
-        st.stop()
+        if media_display == MEDIA_SELECT_PLACEHOLDER:
+            st.stop()
 
-    media_label = next(k for k, v in MEDIA_ICON_MAP.items() if v[0] == media_display)
+        media_label = next(k for k, v in MEDIA_ICON_MAP.items() if v[0] == media_display)
 
-    # ── 媒体変更時にリセット ──
-    if st.session_state.prev_media_label != media_label:
-        st.session_state.new_search_results = []
-        st.session_state.new_search_done    = False
-        st.session_state.confirm_reg        = None
-        st.session_state.bulk_checked       = {}
-        st.session_state.reg_cart           = []
-        st.session_state.prev_media_label   = media_label
+        # ── 媒体変更時にリセット ──
+        if st.session_state.prev_media_label != media_label:
+            st.session_state.new_search_results = []
+            st.session_state.new_search_done    = False
+            st.session_state.confirm_reg        = None
+            st.session_state.bulk_checked       = {}
+            st.session_state.reg_cart           = []
+            st.session_state.prev_media_label   = media_label
 
-    EVENT_MEDIA = ["演奏会（鑑賞）", "演奏会（出演）", "展示会", "ライブ/ショー"]
+        EVENT_MEDIA = ["演奏会（鑑賞）", "演奏会（出演）", "展示会", "ライブ/ショー"]
 
-    # ============================================================
-    # イベント系（演奏会（鑑賞）・演奏会（出演）・展示会・ライブ/ショー）- 単体登録のみ
-    # ============================================================
-    if media_label in EVENT_MEDIA:
-        st.divider()
-        is_performance  = (media_label == "演奏会（出演）")
-        is_concert      = media_label in ("演奏会（鑑賞）", "演奏会（出演）")
-        is_live         = (media_label == "ライブ/ショー")
-        has_setlist     = is_concert or is_live
-
-        # ── 基本情報 ──
-        event_title = st.text_input(
-            "公演名 *",
-            placeholder="例: 〇〇室内楽演奏会 / 定期演奏会" if is_performance else
-                        "例: 大阪フィルハーモニー交響楽団 第588回定期演奏会" if is_concert else
-                        "例: 〇〇 LIVE TOUR 2025"
-        )
-        event_creator = st.text_input(
-            "指揮者" if is_performance else ("アーティスト" if is_live else "クリエイター"),
-            placeholder="例: 井上道義" if is_performance else
-                        "例: Queen / 米津玄師" if is_live else
-                        "例: 指揮者・キュレーターなど"
-        )
-        col_cast, col_genre = st.columns([1, 1])
-        event_cast = col_cast.text_input(
-            "演奏団体" if is_concert else "出演者・バンド",
-            placeholder="例: 大阪フィルハーモニー交響楽団" if is_concert else "例: Queen"
-        )
-        event_genre = col_genre.text_input(
-            "ジャンル",
-            placeholder="例: クラシック / 室内楽" if is_concert else "例: ロック / J-POP"
-        )
-        if media_label == "展示会":
-            col_start, col_end, col_watch = st.columns([1, 1, 1])
-            event_start = col_start.date_input("開催開始日", value=None, key="ev_start")
-            event_end   = col_end.date_input("開催終了日",   value=None, key="ev_end")
-            event_watch = col_watch.date_input("鑑賞日",     value=None, key="ev_watch")
-        else:
-            col_watch2, _ = st.columns([1, 1])
-            date_label_ev = "出演日" if is_performance else ("鑑賞日" if is_concert else "参加日")
-            event_watch = col_watch2.date_input(date_label_ev, value=None, key="ev_watch2")
-            event_start = event_watch
-            event_end   = None
-        col_rating, col_wl = st.columns([2, 1])
-        rating_sel = col_rating.selectbox("評価", RATING_OPTIONS, key="ev_rating")
-        wlflg      = col_wl.checkbox("WLflg", value=False, key="ev_wl")
-
-        # ── セットリスト / プログラム楽曲 ──
-        if has_setlist:
+        # ============================================================
+        # イベント系（演奏会（鑑賞）・演奏会（出演）・展示会・ライブ/ショー）- 単体登録のみ
+        # ============================================================
+        if media_label in EVENT_MEDIA:
             st.divider()
-            MAX_MAIN   = 25
-            MAX_ENCORE = 5
+            is_performance  = (media_label == "演奏会（出演）")
+            is_concert      = media_label in ("演奏会（鑑賞）", "演奏会（出演）")
+            is_live         = (media_label == "ライブ/ショー")
+            has_setlist     = is_concert or is_live
 
-            # セッションステート構造: [{"title": "曲名", "part": "Vn."}]  ※part は演奏会（出演）のみ使用
-            def render_song_list(slot_key, max_count, label):
-                """曲リストUIを描画し、現在のリストを返す"""
-                songs = st.session_state[slot_key]
-                st.caption(label)
-                new_list = []
-                for i, item in enumerate(songs):
-                    if is_performance:
-                        c_num, c_inp, c_part, c_del = st.columns([0.3, 3.5, 1.2, 0.5])
-                    else:
-                        c_num, c_inp, c_del = st.columns([0.3, 4, 0.5])
-                    c_num.markdown(f"**{i+1}.**")
-                    t = c_inp.text_input("", value=item["title"], key=f"{slot_key}_t_{i}", label_visibility="collapsed")
-                    p = c_part.text_input("", value=item["part"], key=f"{slot_key}_p_{i}", placeholder="楽器", label_visibility="collapsed") if is_performance else ""
-                    new_list.append({"title": t, "part": p})
-                    if c_del.button("✕", key=f"{slot_key}_del_{i}"):
-                        st.session_state[slot_key] = [x for j, x in enumerate(new_list) if j != i]
-                        st.rerun()
-                if new_list:
-                    st.session_state[slot_key] = new_list
-                filled = [x for x in new_list if x["title"].strip()]
-                last_empty = new_list and not new_list[-1]["title"].strip()
-                if len(filled) < max_count and not last_empty:
-                    if st.button(f"＋ 曲を追加", key=f"{slot_key}_add"):
-                        st.session_state[slot_key] = filled + [{"title": "", "part": ""}]
-                        st.rerun()
-
-            def add_songs_to_slot(slot_key, titles, max_count):
-                """タイトルリストをセトリに追加（重複除外）"""
-                current = [x for x in st.session_state[slot_key] if x["title"].strip()]
-                for title in titles:
-                    if len(current) < max_count and title not in [x["title"] for x in current]:
-                        current.append({"title": title, "part": ""})
-                st.session_state[slot_key] = current
-
-            # ── 通常セットリスト ──
-            render_song_list("ev_setlist_main", MAX_MAIN, f"📋 通常セットリスト（最大{MAX_MAIN}曲）")
-
-            # ── アンコール ──
-            render_song_list("ev_setlist_encore", MAX_ENCORE, f"🎊 アンコール（最大{MAX_ENCORE}曲）")
-
-            # ── 楽曲検索（検索→ボタンで直接追加、チェックボックスなし）──
-            st.divider()
-            if is_concert:
-                st.caption("🔍 楽曲検索（MusicBrainz）")
-                col_ev_comp, col_ev_title = st.columns([1, 1])
-                ev_composer_input = col_ev_comp.text_input("作曲家名", placeholder="例: Beethoven / ベートーヴェン", key="ev_composer")
-                ev_title_filter   = col_ev_title.text_input("曲名で絞り込み（任意）", placeholder="例: Symphony", key="ev_title_filter")
-
-                if st.button("🔍 作曲家を検索", key="ev_mb_search"):
-                    if ev_composer_input:
-                        with st.spinner("作曲家を検索中..."):
-                            ev_composers, ev_err = search_mb_composer(ev_composer_input)
-                        if ev_err:
-                            st.error(f"⚠️ MusicBrainz API エラー: {ev_err}")
-                        st.session_state.ev_mb_composers = ev_composers
-                        st.session_state.ev_mb_works     = []
-                        st.session_state.ev_mb_filter    = ev_title_filter
-                        if not ev_composers and not ev_err:
-                            st.warning("作曲家が見つかりませんでした。")
-                    else:
-                        st.warning("作曲家名を入力してください")
-
-                if st.session_state.get("ev_mb_composers"):
-                    ev_composers   = st.session_state.ev_mb_composers
-                    ev_comp_labels = [
-                        f"{c['name']}" + (f"（{c['disambiguation']}）" if c['disambiguation'] else "") + (f" [{c['life_span']}–]" if c['life_span'] else "")
-                        for c in ev_composers
-                    ]
-                    ev_sel_idx = st.radio("作曲家を選択", range(len(ev_comp_labels)), format_func=lambda i: ev_comp_labels[i], key="ev_mb_comp_radio")
-                    if st.button("この作曲家の作品一覧を取得", key="ev_mb_fetch_works"):
-                        ev_sel_comp = ev_composers[ev_sel_idx]
-                        with st.spinner(f"{ev_sel_comp['name']} の作品を取得中..."):
-                            ev_works = search_mb_works(ev_sel_comp["id"], st.session_state.get("ev_mb_filter", ""))
-                        st.session_state.ev_mb_works = ev_works
-
-                if st.session_state.get("ev_mb_works"):
-                    ev_works = st.session_state.ev_mb_works
-                    st.caption(f"{len(ev_works)} 件の作品　— ボタンで直接追加")
-                    for w in ev_works:
-                        label = w["title"] + (f"　{w['disambiguation']}" if w["disambiguation"] else "")
-                        col_title, col_main, col_enc = st.columns([4, 1.2, 1.2])
-                        col_title.markdown(label)
-                        if col_main.button("📋 通常", key=f"ev_mb_add_main_{w['id']}"):
-                            add_songs_to_slot("ev_setlist_main", [w["title"]], MAX_MAIN)
-                            st.rerun()
-                        if col_enc.button("🎊 ENC", key=f"ev_mb_add_enc_{w['id']}"):
-                            add_songs_to_slot("ev_setlist_encore", [w["title"]], MAX_ENCORE)
-                            st.rerun()
-
-            elif is_live:
-                st.caption("🔍 楽曲検索（iTunes）")
-                col_it_art, col_it_title = st.columns([1, 1])
-                it_artist_input = col_it_art.text_input("アーティスト名", placeholder="例: Queen / 米津玄師", key="ev_it_artist")
-                it_title_input  = col_it_title.text_input("曲名", placeholder="例: Bohemian Rhapsody", key="ev_it_title")
-
-                if st.button("🔍 曲を検索", key="ev_it_search"):
-                    q = " ".join(filter(None, [it_artist_input, it_title_input]))
-                    if q:
-                        with st.spinner("検索中..."):
-                            res = api_request("get", "https://itunes.apple.com/search",
-                                params={"term": q, "entity": "song", "limit": 20, "lang": "ja_jp"})
-                        if res:
-                            it_results = res.json().get("results", [])
-                            st.session_state.ev_it_results = it_results
-                            if not it_results:
-                                st.warning("曲が見つかりませんでした。")
-                        else:
-                            st.warning("⚠️ iTunes API エラー")
-                    else:
-                        st.warning("アーティスト名または曲名を入力してください")
-
-                if st.session_state.get("ev_it_results"):
-                    it_results = st.session_state.ev_it_results
-                    st.caption(f"{len(it_results)} 件　— ボタンで直接追加")
-                    for i, track in enumerate(it_results):
-                        name   = track.get("trackName", "")
-                        artist = track.get("artistName", "")
-                        col_title, col_main, col_enc = st.columns([4, 1.2, 1.2])
-                        col_title.markdown(f"{name}  —  {artist}")
-                        if col_main.button("📋 通常", key=f"ev_it_add_main_{i}"):
-                            add_songs_to_slot("ev_setlist_main", [name], MAX_MAIN)
-                            st.rerun()
-                        if col_enc.button("🎊 ENC", key=f"ev_it_add_enc_{i}"):
-                            add_songs_to_slot("ev_setlist_encore", [name], MAX_ENCORE)
-                            st.rerun()
-
-        st.divider()
-        event_location = location_search_ui("event", media_label)
-        if st.button("📥 登録する", type="primary", key="event_register", disabled=not event_title):
-            watch_str = event_watch.isoformat() if event_watch else None
-            start_str = event_start.isoformat() if event_start else None
-            end_str   = event_end.isoformat()   if event_end   else None
-
-            # ── メモ生成 ──
-            memo_text = None
-            if has_setlist:
-                main_items   = [x for x in st.session_state.get("ev_setlist_main",   []) if x["title"].strip()]
-                encore_items = [x for x in st.session_state.get("ev_setlist_encore", []) if x["title"].strip()]
-                def fmt(i, item):
-                    suffix = f" [{item['part']}]" if is_performance and item.get("part","").strip() else ""
-                    return f"{i+1}. {item['title']}{suffix}"
-                lines = [fmt(i, x) for i, x in enumerate(main_items)]
-                if encore_items:
-                    lines.append("")
-                    lines.append("[Encore]")
-                    lines += [fmt(i, x) for i, x in enumerate(encore_items)]
-                memo_text = "\n".join(lines) if lines else None
-
-            ok = create_notion_page(
-                jp_title=event_title, en_title=event_title,
-                media_type_label=media_label,
-                tmdb_id=None, media_type="event",
-                cover_url=get_media_icon_url(media_label),
-                tmdb_release=start_str or "",
-                details={"genres": [event_genre] if event_genre else [], "cast": event_cast, "director": event_creator, "score": None},
-                wlflg=wlflg,
-                watched_date=watch_str,
-                rating=rating_sel if rating_sel else None,
-                event_end=end_str,
-                location=event_location,
-                memo=memo_text,
+            # ── 基本情報 ──
+            event_title = st.text_input(
+                "公演名 *",
+                placeholder="例: 〇〇室内楽演奏会 / 定期演奏会" if is_performance else
+                            "例: 大阪フィルハーモニー交響楽団 第588回定期演奏会" if is_concert else
+                            "例: 〇〇 LIVE TOUR 2025"
             )
-            if ok:
-                for key in ["ev_mb_composers", "ev_mb_works", "ev_mb_filter",
-                            "ev_it_results", "ev_setlist_main", "ev_setlist_encore"]:
-                    st.session_state.pop(key, None)
-                show_post_register_ui()
+            event_creator = st.text_input(
+                "指揮者" if is_performance else ("アーティスト" if is_live else "クリエイター"),
+                placeholder="例: 井上道義" if is_performance else
+                            "例: Queen / 米津玄師" if is_live else
+                            "例: 指揮者・キュレーターなど"
+            )
+            col_cast, col_genre = st.columns([1, 1])
+            event_cast = col_cast.text_input(
+                "演奏団体" if is_concert else "出演者・バンド",
+                placeholder="例: 大阪フィルハーモニー交響楽団" if is_concert else "例: Queen"
+            )
+            event_genre = col_genre.text_input(
+                "ジャンル",
+                placeholder="例: クラシック / 室内楽" if is_concert else "例: ロック / J-POP"
+            )
+            if media_label == "展示会":
+                col_start, col_end, col_watch = st.columns([1, 1, 1])
+                event_start = col_start.date_input("開催開始日", value=None, key="ev_start")
+                event_end   = col_end.date_input("開催終了日",   value=None, key="ev_end")
+                event_watch = col_watch.date_input("鑑賞日",     value=None, key="ev_watch")
             else:
-                st.error("❌ 登録失敗")
-        st.stop()
+                col_watch2, _ = st.columns([1, 1])
+                date_label_ev = "出演日" if is_performance else ("鑑賞日" if is_concert else "参加日")
+                event_watch = col_watch2.date_input(date_label_ev, value=None, key="ev_watch2")
+                event_start = event_watch
+                event_end   = None
+            col_rating, col_wl = st.columns([2, 1])
+            rating_sel = col_rating.selectbox("評価", RATING_OPTIONS, key="ev_rating")
+            wlflg      = col_wl.checkbox("WLflg", value=False, key="ev_wl")
 
-    # ============================================================
-    # 演奏曲 - MusicBrainzカート登録
-    # ============================================================
-    if media_label == "演奏曲":
-        st.divider()
-        col_composer, col_title = st.columns([1, 1])
-        composer_input = col_composer.text_input("作曲家名", placeholder="例: Beethoven / ベートーヴェン")
-        title_filter   = col_title.text_input("曲名で絞り込み（任意）", placeholder="例: Symphony")
+            # ── セットリスト / プログラム楽曲 ──
+            if has_setlist:
+                st.divider()
+                MAX_MAIN   = 25
+                MAX_ENCORE = 5
 
-        if st.button("🔍 検索", key="mb_composer_search"):
-            if composer_input:
-                with st.spinner("作曲家を検索中..."):
-                    composers, err = search_mb_composer(composer_input)
-                if err:
-                    st.error(f"⚠️ MusicBrainz API エラー: {err}")
-                st.session_state.mb_composers     = composers
-                st.session_state.mb_works         = []
-                st.session_state.mb_title_filter  = title_filter
-                st.session_state.mb_selected_comp = None
-                if not composers and not err:
-                    st.warning("作曲家が見つかりませんでした。")
-            else:
-                st.warning("作曲家名を入力してください")
-
-        if st.session_state.get("mb_composers"):
-            composers   = st.session_state.mb_composers
-            comp_labels = [
-                f"{c['name']}" + (f"（{c['disambiguation']}）" if c['disambiguation'] else "") + (f" [{c['life_span']}–]" if c['life_span'] else "")
-                for c in composers
-            ]
-            selected_idx = st.radio("作曲家を選択", range(len(comp_labels)), format_func=lambda i: comp_labels[i], key="mb_comp_radio")
-            if st.button("この作曲家の作品一覧を取得", key="mb_fetch_works"):
-                selected_comp = composers[selected_idx]
-                st.session_state.mb_selected_comp = selected_comp
-                with st.spinner(f"{selected_comp['name']} の作品を取得中...（数分かかることがあります）"):
-                    works = search_mb_works(selected_comp["id"], st.session_state.mb_title_filter)
-                st.session_state.mb_works   = works
-                st.session_state.mb_checked = {}
-
-        if st.session_state.get("mb_works"):
-            works = st.session_state.mb_works
-            comp  = st.session_state.mb_selected_comp or {}
-            st.caption(f"{len(works)} 件の作品")
-            col_all, col_none = st.columns([1, 1])
-            if col_all.button("全選択",  key="mb_all"):
-                for w in works: st.session_state.mb_checked[w["id"]] = True
-            if col_none.button("全解除", key="mb_none"):
-                st.session_state.mb_checked = {}
-
-            for w in works:
-                label = w["title"] + (f"　{w['disambiguation']}" if w["disambiguation"] else "")
-                checked = st.checkbox(label, key=f"mb_{w['id']}", value=st.session_state.mb_checked.get(w["id"], False))
-                if checked:
-                    st.session_state.mb_checked[w["id"]] = True
-                else:
-                    st.session_state.mb_checked.pop(w["id"], None)
-
-            selected_works = [w for w in works if st.session_state.mb_checked.get(w["id"])]
-            if selected_works:
-                st.info(f"{len(selected_works)} 件選択中")
-
-                # 肖像画取得
-                comp_name  = comp.get("name", "")
-                artist_id  = comp.get("id", "")
-                if "mb_portrait_url" not in st.session_state or st.session_state.get("mb_portrait_comp") != artist_id:
-                    with st.spinner(f"🖼️ {comp_name} の肖像画を取得中..."):
-                        portrait_url = get_composer_portrait_url(comp_name, artist_id)
-                    st.session_state.mb_portrait_url  = portrait_url
-                    st.session_state.mb_portrait_comp = artist_id
-                else:
-                    portrait_url = st.session_state.mb_portrait_url
-
-                if portrait_url:
-                    if portrait_url.startswith("https://drive.google.com"):
-                        try:
-                            img_res = requests.get(portrait_url, timeout=8)
-                            st.image(io.BytesIO(img_res.content), width=120, caption=comp_name)
-                        except Exception:
-                            st.image(portrait_url, width=120, caption=comp_name)
-                    else:
-                        st.image(portrait_url, width=120, caption=comp_name)
-                    cover_url_final = portrait_url
-                else:
-                    st.warning(f"⚠️ {comp_name} の肖像画が見つかりませんでした。画像をアップロードしてください。")
-                    uploaded = st.file_uploader("肖像画をアップロード", type=["jpg", "jpeg", "png"], key="mb_portrait_upload")
-                    if uploaded:
-                        default_fname = sanitize_filename(comp_name)
-                        custom_fname  = st.text_input(
-                            "Drive保存名（変更可）",
-                            value=default_fname,
-                            key="mb_portrait_fname",
-                            help="この名前でDriveに保存されます。デフォルト名のままにしておくと、次回以降この作曲家を選択した際に自動で使いまわせます。",
-                        )
-                        if custom_fname != default_fname:
-                            st.caption("⚠️ 名前を変更すると次回自動使用されません。このセッションのみ有効です。")
-                        save_fname = f"portrait_{custom_fname}.jpg"
-                        img_bytes = uploaded.read()
-                        mimetype  = "image/png" if uploaded.name.endswith(".png") else "image/jpeg"
-                        with st.spinner("Driveに保存中..."):
-                            service = get_drive_service_safe()
-                            media   = MediaIoBaseUpload(io.BytesIO(img_bytes), mimetype=mimetype, resumable=False)
-                            result  = service.files().create(
-                                body={"name": save_fname, "parents": [DRIVE_FOLDER_ID]},
-                                media_body=media, fields="id",
-                            ).execute()
-                            file_id = result["id"]
-                            st.session_state.drive_files_cache[save_fname] = file_id
-                            service.permissions().create(fileId=file_id, body={"role": "reader", "type": "anyone"}).execute()
-                            cover_url_final = f"https://drive.google.com/uc?id={file_id}"
-                            if custom_fname == default_fname:
-                                st.session_state.mb_portrait_url  = cover_url_final
-                                st.session_state.mb_portrait_comp = artist_id
-                        st.image(io.BytesIO(img_bytes), width=120, caption=comp_name)
-                    else:
-                        cover_url_final = MB_DEFAULT_COVER
-
-                if st.button(f"📋 {len(selected_works)} 件を登録リストに追加", key="mb_add_cart"):
-                    for w in selected_works:
-                        st.session_state.reg_cart.append({
-                            "jp_title":    w["title"],
-                            "en_title":    w["title"],
-                            "cover_url":   cover_url_final,
-                            "release":     "",
-                            "watched":     "",
-                            "rating":      "",
-                            "wlflg":       False,
-                            "media_type":  "score",
-                            "tmdb_id":     0,
-                            "details":     {"genres": [], "cast": "", "director": comp_name, "score": None},
-                            "isbn":        "",
-                            "location":    None,
-                            "media_label": media_label,
-                        })
-                    st.session_state.mb_checked = {}
-                    st.success(f"✅ {len(selected_works)} 件を登録リストに追加しました")
-        st.stop()
-
-    # ============================================================
-    # 通常媒体（映画・ドラマ・書籍・漫画・音楽アルバム・ゲーム・アニメ）
-    # ============================================================
-    st.divider()
-
-    if media_label in ["音楽アルバム"]:
-        col_jp, col_en = st.columns([1, 1])
-        jp_input      = clearable_text_input("アルバム名", "inp_jp_album", placeholder="例: 千のナイフ", container=col_jp)
-        creator_input = clearable_text_input("アーティスト名", "inp_creator_album", placeholder="例: 坂本龍一", container=col_en)
-        cast_input    = ""
-        en_input      = ""
-    elif media_label == "ゲーム":
-        jp_input      = clearable_text_input("ゲームタイトル", "inp_jp_game", placeholder="例: ゼルダの伝説")
-        creator_input = ""
-        cast_input    = ""
-        en_input      = jp_input
-    elif media_label == "アニメ":
-        jp_input      = clearable_text_input("アニメタイトル", "inp_jp_anime", placeholder="例: 鬼滅の刃 / Demon Slayer")
-        creator_input = ""
-        cast_input    = ""
-        en_input      = jp_input
-    elif media_label == "漫画":
-        col_jp, col_en = st.columns([1, 1])
-        jp_input      = clearable_text_input("タイトル", "inp_jp_manga", placeholder="例: 鬼滅の刃", container=col_jp)
-        creator_input = clearable_text_input("著者名", "inp_creator_manga", placeholder="例: 吾峠呼世晴", container=col_en)
-        cast_input    = ""
-        en_input      = ""
-    else:
-        col_jp, col_en = st.columns([1, 1])
-        jp_input      = clearable_text_input("日本語タイトル", "inp_jp_main", placeholder="例: 千と千尋の神隠し", container=col_jp)
-        en_input      = clearable_text_input("英語タイトル（検索用）", "inp_en_main", placeholder="例: Spirited Away", container=col_en)
-        col_creator, col_cast = st.columns([1, 1])
-        creator_input = clearable_text_input("クリエイター（著者・監督）", "inp_creator_main", placeholder="例: 宮崎駿 / 道尾秀介", container=col_creator)
-        cast_input    = clearable_text_input("キャスト・関係者", "inp_cast_main", placeholder="例: 木村拓哉", container=col_cast)
-
-    if st.button("🔍 検索", key="new_search"):
-        query = en_input if en_input else jp_input
-        if query or creator_input or cast_input:
-            if media_label == "書籍":
-                results = search_books(query or "", author=creator_input or None)
-            elif media_label == "漫画":
-                results = search_manga(query or "", author=creator_input or None)
-            elif media_label == "音楽アルバム":
-                results = search_albums(query or "", artist=creator_input or None)
-            elif media_label == "ゲーム":
-                results = search_games(query or jp_input)
-            elif media_label == "アニメ":
-                results = search_anime(query or jp_input)
-            else:
-                tmdb_mt = "movie" if media_label == "映画" else "tv"
-                if creator_input or cast_input:
-                    results = search_tmdb_by_person(creator_input or cast_input, media_type=tmdb_mt)
-                else:
-                    results = search_tmdb(query, media_type=tmdb_mt)
-            reg_ids = get_registered_ids(st.session_state.pages)
-            filtered, excluded = filter_registered(results, media_label, reg_ids)
-            st.session_state.new_search_results  = filtered[:20]
-            st.session_state.new_search_excluded = excluded
-            st.session_state.new_search_done     = True
-            st.session_state.confirm_reg         = None
-            st.session_state.bulk_checked        = {}
-            st.session_state.rakuten_page        = 1
-            st.session_state.rakuten_query_key   = f"{media_label}|{query}|{creator_input}"
-        else:
-            st.warning("タイトルまたはクリエイター名を入力してください")
-
-    # ── 単体確認画面 ──
-    if st.session_state.confirm_reg is not None:
-        reg = st.session_state.confirm_reg
-        st.divider()
-        st.subheader("📝 登録内容の確認・修正")
-        c1, c2 = st.columns([1, 2])
-        with c1:
-            if reg.get("cover_url"):
-                st.image(reg["cover_url"])
-            st.caption(f"{reg['cand_en']} ({reg['media_type']}) {reg['tmdb_release']} 🆔 {reg.get('tmdb_id','')}")
-        with c2:
-            final_jp = clearable_text_input("日本語タイトル（修正可）", "final_jp", value=reg.get("jp_input", jp_input))
-            final_en = clearable_text_input("英語タイトル（修正可）", "final_en", value=reg["cand_en"])
-            if media_label in ("書籍", "漫画"):
-                final_isbn = st.text_input("ISBN", value=reg.get("isbn", ""), key="final_isbn")
-            else:
-                final_isbn = None
-
-            include_tracks = False
-            tracks_text    = ""
-            if media_label == "音楽アルバム" and reg.get("tmdb_id") == 0:
-                collection_id = reg.get("itunes_id", 0)
-                if collection_id:
-                    if "album_tracks_cache" not in st.session_state or st.session_state.get("album_tracks_id") != collection_id:
-                        with st.spinner("トラックリスト取得中..."):
-                            tracks = fetch_itunes_tracks(collection_id)
-                            st.session_state.album_tracks_cache = tracks
-                            st.session_state.album_tracks_id    = collection_id
-                    else:
-                        tracks = st.session_state.album_tracks_cache
-                    if tracks:
-                        tracks_text    = "\n".join(f"{t['no']}. {t['name']}" for t in tracks)
-                        include_tracks = st.checkbox("トラックリストをメモに追加", value=True, key="include_tracks")
-                        if include_tracks:
-                            st.caption(tracks_text)
-
-            if not st.session_state.pages_loaded:
-                with st.spinner("重複チェック中..."):
-                    all_pages = load_notion_data()
-                    st.session_state.pages        = filter_target_pages(all_pages)
-                    st.session_state.pages_loaded = True
-            dupes = check_duplicate(reg.get("tmdb_id", 0), st.session_state.pages)
-            if dupes:
-                dupe_titles = "、".join([get_title(d["properties"])[0] for d in dupes])
-                st.warning(f"⚠️ 登録済のデータがあります：{dupe_titles}\nそれでも登録しますか？")
-
-            date_label   = {"ゲーム": "クリア日", "音楽アルバム": "聴いた日", "書籍": "読了日", "漫画": "読了日", "アニメ": "視聴日"}.get(media_label, "鑑賞日")
-            col_wl, col_date, col_rating = st.columns([1, 2, 2])
-            wlflg        = col_wl.checkbox("WLflg", value=False, key="confirm_wl")
-            watched_date = col_date.date_input(date_label, value=None, key="confirm_date")
-            rating_sel   = col_rating.selectbox("評価", RATING_OPTIONS, key="confirm_rating")
-            st.divider()
-            confirm_location = location_search_ui("confirm", media_label)
-
-            col_ok, col_cancel = st.columns([1, 1])
-            with col_ok:
-                if st.button("✅ 登録する", key="confirm_ok", disabled=st.session_state.registering):
-                    st.session_state.registering = True
-                    st.rerun()
-            with col_cancel:
-                if st.button("❌ キャンセル", key="confirm_cancel", disabled=st.session_state.registering):
-                    st.session_state.confirm_reg = None
-                    st.rerun()
-
-            if st.session_state.registering:
-                with st.spinner("登録中..."):
-                    if reg["media_type"] in ("book", "manga"):
-                        details = {"genres": reg.get("book_genres", []), "cast": "", "director": clean_author_list(reg.get("book_authors", [])), "score": None}
-                    elif reg["media_type"] in ("album", "game"):
-                        details = {"genres": reg.get("book_genres", []), "cast": reg.get("game_publisher", ""), "director": clean_author_list(reg.get("book_authors", [])), "score": None}
-                    elif reg["media_type"] == "anime":
-                        details = {"genres": reg.get("book_genres", []), "cast": "", "director": clean_author_list(reg.get("book_authors", [])), "score": reg.get("anime_score")}
-                    else:
-                        details = fetch_tmdb_details(reg["tmdb_id"], reg["media_type"])
-                    watched_str  = watched_date.isoformat() if watched_date else None
-                    page_tmdb_id = 0 if reg["media_type"] not in ("movie", "tv") else reg["tmdb_id"]
-                    memo_text = None
-                    if reg["media_type"] == "album" and st.session_state.get("include_tracks", False):
-                        tracks = st.session_state.get("album_tracks_cache", [])
-                        if tracks:
-                            memo_text = "\n".join(f"{t['no']}. {t['name']}" for t in tracks)
-                    ok = create_notion_page(
-                        jp_title=final_jp, en_title=final_en,
-                        media_type_label=media_label,
-                        tmdb_id=page_tmdb_id, media_type=reg["media_type"],
-                        cover_url=reg["cover_url"], tmdb_release=reg["tmdb_release"],
-                        details=details, wlflg=wlflg,
-                        watched_date=watched_str,
-                        rating=rating_sel if rating_sel else None,
-                        isbn=final_isbn or None,
-                        memo=memo_text,
-                        location=confirm_location,
-                        igdb_id=reg.get("igdb_id"),
-                        itunes_id=reg.get("itunes_id"),
-                        anilist_id=reg.get("anilist_id"),
-                    )
-                    st.session_state.registering = False
-                    if ok:
-                        if reg["media_type"] in ("movie", "tv"):
-                            save_to_drive(reg["cover_url"], final_jp or final_en, reg["tmdb_id"])
-                        st.session_state.confirm_reg        = None
-                        st.session_state.new_search_results = []
-                        st.session_state.new_search_done    = False
-                        for key in ["confirm_reg", "new_search_results", "new_search_done", "bulk_checked"]:
-                            st.session_state.pop(key, None)
-                        show_post_register_ui()
-                    else:
-                        st.error("❌ 登録失敗")
-
-    # ── 検索結果一覧（カード＋チェック）──
-    elif st.session_state.new_search_results:
-        results_list = st.session_state.new_search_results
-        excluded_list = st.session_state.get("new_search_excluded", [])
-        st.caption(f"{len(results_list)} 件の候補　チェックして登録リストに追加できます")
-        if excluded_list:
-            st.caption(f"⚠️ {len(excluded_list)} 件は登録済みのため除外")
-            with st.expander("除外されたタイトルを表示"):
-                for t in excluded_list:
-                    st.caption(f"・{t}")
-
-        for row_start in range(0, len(results_list), 3):
-            cols = st.columns(3)
-            for col_idx, cand in enumerate(results_list[row_start:row_start + 3]):
-                abs_idx = row_start + col_idx
-                with cols[col_idx]:
-                    cand_type = cand.get("media_type", "")
-                    if media_label in ("書籍", "漫画"):
-                        cover_url     = cand["cover_url"]
-                        tmdb_release  = cand.get("published", "")
-                        media_type    = cand_type
-                        cand_en       = ""
-                        display_title = cand["title"]
-                        authors       = " / ".join(cand.get("authors", []))
-                    elif media_label == "音楽アルバム":
-                        cover_url     = cand["cover_url"]
-                        tmdb_release  = cand.get("release", "")
-                        media_type    = "album"
-                        cand_en       = ""
-                        display_title = cand["title"]
-                        authors       = cand.get("artist", "")
-                    elif media_label == "ゲーム":
-                        cover_url     = cand["cover_url"]
-                        tmdb_release  = cand.get("release", "")
-                        media_type    = "game"
-                        cand_en       = cand["title"]
-                        display_title = cand["title"]
-                        authors       = cand.get("developer", "")
-                    elif media_label == "アニメ":
-                        cover_url     = cand["cover_url"]
-                        tmdb_release  = cand.get("release", "")
-                        media_type    = "anime"
-                        cand_en       = cand.get("title_en") or cand.get("title_romaji", "")
-                        display_title = cand["title"]
-                        authors       = cand.get("director", "")
-                    else:
-                        cover_url    = f"https://image.tmdb.org/t/p/w600_and_h900_bestv2{cand['poster_path']}"
-                        tmdb_release = cand.get("release_date") or cand.get("first_air_date") or ""
-                        media_type   = cand.get("media_type", "movie")
-                        cand_en      = cand.get("title") or cand.get("name", "")
-                        display_title = cand_en
-                        authors      = ""
-
-                    checked = st.checkbox(
-                        f"**{display_title}**",
-                        key=f"chk_{abs_idx}",
-                        value=st.session_state.bulk_checked.get(abs_idx, False),
-                    )
-                    st.session_state.bulk_checked[abs_idx] = checked
-
-                    if cover_url:
-                        try:
-                            st.image(cover_url)
-                        except Exception:
-                            st.caption("📷 画像取得失敗")
-                    else:
-                        st.caption("📷 画像なし")
-                    if authors:      st.caption(f"{'著者' if media_label in ('書籍','漫画') else 'アーティスト' if media_label == '音楽アルバム' else '開発'}: {authors}")
-                    if tmdb_release: st.caption(f"{'出版' if media_label in ('書籍','漫画') else 'リリース'}: {tmdb_release}")
-                    if media_label not in ("書籍", "漫画", "音楽アルバム", "ゲーム", "アニメ"):
-                        st.caption(f"🆔 {cand['id']}")
-
-                    if st.button("✅ 単体登録", key=f"new_reg_{abs_idx}"):
-                        if media_label in ("書籍", "漫画"):
-                            st.session_state.confirm_reg = {
-                                "tmdb_id": cand["id"], "cover_url": cand["cover_url"],
-                                "tmdb_release": cand.get("published", ""), "media_type": cand_type,
-                                "cand_en": "", "jp_input": cand["title"],
-                                "book_authors": cand.get("authors", []), "book_genres": cand.get("genres", []),
-                                "isbn": cand.get("isbn", ""),
-                            }
-                        elif media_label == "音楽アルバム":
-                            st.session_state.confirm_reg = {
-                                "tmdb_id": 0, "itunes_id": cand["id"], "cover_url": cand["cover_url"],
-                                "tmdb_release": cand.get("release", ""), "media_type": "album",
-                                "cand_en": cand["title"], "jp_input": "",
-                                "book_authors": [cand.get("artist", "")], "book_genres": [], "isbn": "",
-                            }
-                        elif media_label == "ゲーム":
-                            st.session_state.confirm_reg = {
-                                "tmdb_id": 0, "cover_url": cand["cover_url"],
-                                "tmdb_release": cand.get("release", ""), "media_type": "game",
-                                "cand_en": cand["title"], "jp_input": cand["title"],
-                                "book_authors": [cand.get("developer", "")], "book_genres": cand.get("genres", []),
-                                "isbn": "", "game_publisher": cand.get("publisher", ""),
-                                "igdb_id": cand.get("id"),
-                            }
-                        elif media_label == "アニメ":
-                            st.session_state.confirm_reg = {
-                                "tmdb_id": 0, "cover_url": cand["cover_url"],
-                                "tmdb_release": cand.get("release", ""), "media_type": "anime",
-                                "cand_en": cand.get("title_en") or cand.get("title_romaji", ""),
-                                "jp_input": cand["title"],
-                                "book_authors": [cand.get("director", "")],
-                                "book_genres": cand.get("genres", []),
-                                "isbn": "", "anime_score": cand.get("score"),
-                                "anilist_id": cand.get("id"),
-                            }
+                # セッションステート構造: [{"title": "曲名", "part": "Vn."}]  ※part は演奏会（出演）のみ使用
+                def render_song_list(slot_key, max_count, label):
+                    """曲リストUIを描画し、現在のリストを返す"""
+                    songs = st.session_state[slot_key]
+                    st.caption(label)
+                    new_list = []
+                    for i, item in enumerate(songs):
+                        if is_performance:
+                            c_num, c_inp, c_part, c_del = st.columns([0.3, 3.5, 1.2, 0.5])
                         else:
-                            with st.spinner("日本語タイトル取得中..."):
-                                ja_title = fetch_tmdb_ja_title(cand["id"], media_type)
-                            st.session_state.confirm_reg = {
-                                "tmdb_id": cand["id"], "cover_url": cover_url,
-                                "tmdb_release": tmdb_release, "media_type": media_type,
-                                "cand_en": cand_en, "jp_input": ja_title or jp_input,
-                            }
-                        st.rerun()
+                            c_num, c_inp, c_del = st.columns([0.3, 4, 0.5])
+                        c_num.markdown(f"**{i+1}.**")
+                        t = c_inp.text_input("", value=item["title"], key=f"{slot_key}_t_{i}", label_visibility="collapsed")
+                        p = c_part.text_input("", value=item["part"], key=f"{slot_key}_p_{i}", placeholder="楽器", label_visibility="collapsed") if is_performance else ""
+                        new_list.append({"title": t, "part": p})
+                        if c_del.button("✕", key=f"{slot_key}_del_{i}"):
+                            st.session_state[slot_key] = [x for j, x in enumerate(new_list) if j != i]
+                            st.rerun()
+                    if new_list:
+                        st.session_state[slot_key] = new_list
+                    filled = [x for x in new_list if x["title"].strip()]
+                    last_empty = new_list and not new_list[-1]["title"].strip()
+                    if len(filled) < max_count and not last_empty:
+                        if st.button(f"＋ 曲を追加", key=f"{slot_key}_add"):
+                            st.session_state[slot_key] = filled + [{"title": "", "part": ""}]
+                            st.rerun()
 
-        # ── 登録リストに追加ボタン ──
-        checked_indices = [i for i, v in st.session_state.bulk_checked.items() if v]
-        if checked_indices:
+                def add_songs_to_slot(slot_key, titles, max_count):
+                    """タイトルリストをセトリに追加（重複除外）"""
+                    current = [x for x in st.session_state[slot_key] if x["title"].strip()]
+                    for title in titles:
+                        if len(current) < max_count and title not in [x["title"] for x in current]:
+                            current.append({"title": title, "part": ""})
+                    st.session_state[slot_key] = current
+
+                # ── 通常セットリスト ──
+                render_song_list("ev_setlist_main", MAX_MAIN, f"📋 通常セットリスト（最大{MAX_MAIN}曲）")
+
+                # ── アンコール ──
+                render_song_list("ev_setlist_encore", MAX_ENCORE, f"🎊 アンコール（最大{MAX_ENCORE}曲）")
+
+                # ── 楽曲検索（検索→ボタンで直接追加、チェックボックスなし）──
+                st.divider()
+                if is_concert:
+                    st.caption("🔍 楽曲検索（MusicBrainz）")
+                    col_ev_comp, col_ev_title = st.columns([1, 1])
+                    ev_composer_input = col_ev_comp.text_input("作曲家名", placeholder="例: Beethoven / ベートーヴェン", key="ev_composer")
+                    ev_title_filter   = col_ev_title.text_input("曲名で絞り込み（任意）", placeholder="例: Symphony", key="ev_title_filter")
+
+                    if st.button("🔍 作曲家を検索", key="ev_mb_search"):
+                        if ev_composer_input:
+                            with st.spinner("作曲家を検索中..."):
+                                ev_composers, ev_err = search_mb_composer(ev_composer_input)
+                            if ev_err:
+                                st.error(f"⚠️ MusicBrainz API エラー: {ev_err}")
+                            st.session_state.ev_mb_composers = ev_composers
+                            st.session_state.ev_mb_works     = []
+                            st.session_state.ev_mb_filter    = ev_title_filter
+                            if not ev_composers and not ev_err:
+                                st.warning("作曲家が見つかりませんでした。")
+                        else:
+                            st.warning("作曲家名を入力してください")
+
+                    if st.session_state.get("ev_mb_composers"):
+                        ev_composers   = st.session_state.ev_mb_composers
+                        ev_comp_labels = [
+                            f"{c['name']}" + (f"（{c['disambiguation']}）" if c['disambiguation'] else "") + (f" [{c['life_span']}–]" if c['life_span'] else "")
+                            for c in ev_composers
+                        ]
+                        ev_sel_idx = st.radio("作曲家を選択", range(len(ev_comp_labels)), format_func=lambda i: ev_comp_labels[i], key="ev_mb_comp_radio")
+                        if st.button("この作曲家の作品一覧を取得", key="ev_mb_fetch_works"):
+                            ev_sel_comp = ev_composers[ev_sel_idx]
+                            with st.spinner(f"{ev_sel_comp['name']} の作品を取得中..."):
+                                ev_works = search_mb_works(ev_sel_comp["id"], st.session_state.get("ev_mb_filter", ""))
+                            st.session_state.ev_mb_works = ev_works
+
+                    if st.session_state.get("ev_mb_works"):
+                        ev_works = st.session_state.ev_mb_works
+                        st.caption(f"{len(ev_works)} 件の作品　— ボタンで直接追加")
+                        for w in ev_works:
+                            label = w["title"] + (f"　{w['disambiguation']}" if w["disambiguation"] else "")
+                            col_title, col_main, col_enc = st.columns([4, 1.2, 1.2])
+                            col_title.markdown(label)
+                            if col_main.button("📋 通常", key=f"ev_mb_add_main_{w['id']}"):
+                                add_songs_to_slot("ev_setlist_main", [w["title"]], MAX_MAIN)
+                                st.rerun()
+                            if col_enc.button("🎊 ENC", key=f"ev_mb_add_enc_{w['id']}"):
+                                add_songs_to_slot("ev_setlist_encore", [w["title"]], MAX_ENCORE)
+                                st.rerun()
+
+                elif is_live:
+                    st.caption("🔍 楽曲検索（iTunes）")
+                    col_it_art, col_it_title = st.columns([1, 1])
+                    it_artist_input = col_it_art.text_input("アーティスト名", placeholder="例: Queen / 米津玄師", key="ev_it_artist")
+                    it_title_input  = col_it_title.text_input("曲名", placeholder="例: Bohemian Rhapsody", key="ev_it_title")
+
+                    if st.button("🔍 曲を検索", key="ev_it_search"):
+                        q = " ".join(filter(None, [it_artist_input, it_title_input]))
+                        if q:
+                            with st.spinner("検索中..."):
+                                res = api_request("get", "https://itunes.apple.com/search",
+                                    params={"term": q, "entity": "song", "limit": 20, "lang": "ja_jp"})
+                            if res:
+                                it_results = res.json().get("results", [])
+                                st.session_state.ev_it_results = it_results
+                                if not it_results:
+                                    st.warning("曲が見つかりませんでした。")
+                            else:
+                                st.warning("⚠️ iTunes API エラー")
+                        else:
+                            st.warning("アーティスト名または曲名を入力してください")
+
+                    if st.session_state.get("ev_it_results"):
+                        it_results = st.session_state.ev_it_results
+                        st.caption(f"{len(it_results)} 件　— ボタンで直接追加")
+                        for i, track in enumerate(it_results):
+                            name   = track.get("trackName", "")
+                            artist = track.get("artistName", "")
+                            col_title, col_main, col_enc = st.columns([4, 1.2, 1.2])
+                            col_title.markdown(f"{name}  —  {artist}")
+                            if col_main.button("📋 通常", key=f"ev_it_add_main_{i}"):
+                                add_songs_to_slot("ev_setlist_main", [name], MAX_MAIN)
+                                st.rerun()
+                            if col_enc.button("🎊 ENC", key=f"ev_it_add_enc_{i}"):
+                                add_songs_to_slot("ev_setlist_encore", [name], MAX_ENCORE)
+                                st.rerun()
+
             st.divider()
-            st.caption(f"✅ {len(checked_indices)} 件選択中")
-            if st.button(f"📋 {len(checked_indices)} 件を登録リストに追加", type="primary", key="add_to_cart"):
-                for i in checked_indices:
-                    cand   = results_list[i]
-                    c_type = cand.get("media_type", "")
-                    if media_label in ("書籍", "漫画"):
-                        cart_item = {
-                            "jp_title":   cand["title"], "en_title": "",
-                            "cover_url":  cand["cover_url"], "release": cand.get("published", ""),
-                            "watched": "", "rating": "", "wlflg": False,
-                            "media_type": c_type, "tmdb_id": 0,
-                            "details":    {"genres": cand.get("genres", []), "cast": "", "director": clean_author_list(cand.get("authors", [])), "score": None},
-                            "isbn":       cand.get("isbn", ""),
-                            "location":   None, "media_label": media_label,
-                        }
-                    elif media_label == "音楽アルバム":
-                        cart_item = {
-                            "jp_title":   cand["title"], "en_title": "",
-                            "cover_url":  cand["cover_url"], "release": cand.get("release", ""),
-                            "watched": "", "rating": "", "wlflg": False,
-                            "media_type": "album", "tmdb_id": 0,
-                            "details":    {"genres": [], "cast": "", "director": clean_author(cand.get("artist", "")), "score": None},
-                            "isbn":       "", "itunes_id": cand.get("id"),
-                            "location":   None, "media_label": media_label,
-                        }
-                    elif media_label == "ゲーム":
-                        cart_item = {
-                            "jp_title":   cand["title"], "en_title": cand["title"],
-                            "cover_url":  cand["cover_url"], "release": cand.get("release", ""),
-                            "watched": "", "rating": "", "wlflg": False,
-                            "media_type": "game", "tmdb_id": 0,
-                            "details":    {"genres": cand.get("genres", []), "cast": cand.get("publisher", ""), "director": clean_author(cand.get("developer", "")), "score": None},
-                            "isbn":       "", "igdb_id": cand.get("id"),
-                            "location":   None, "media_label": media_label,
-                        }
-                    elif media_label == "アニメ":
-                        cart_item = {
-                            "jp_title":   cand["title"],
-                            "en_title":   cand.get("title_en") or cand.get("title_romaji", ""),
-                            "cover_url":  cand["cover_url"], "release": cand.get("release", ""),
-                            "watched": "", "rating": "", "wlflg": False,
-                            "media_type": "anime", "tmdb_id": 0,
-                            "details":    {"genres": cand.get("genres", []), "cast": "", "director": cand.get("director", ""), "score": cand.get("score")},
-                            "isbn":       "", "anilist_id": cand.get("id"),
-                            "location":   None, "media_label": media_label,
-                        }
-                    else:
-                        c_cover   = f"https://image.tmdb.org/t/p/w600_and_h900_bestv2{cand['poster_path']}"
-                        c_release = cand.get("release_date") or cand.get("first_air_date") or ""
-                        c_en      = cand.get("title") or cand.get("name", "")
-                        with st.spinner(f"日本語タイトル取得中... ({i+1}/{len(checked_indices)})"):
-                            c_jp = fetch_tmdb_ja_title(cand["id"], cand.get("media_type","movie")) or c_en
-                        cart_item = {
-                            "jp_title":   c_jp, "en_title": c_en,
-                            "cover_url":  c_cover, "release": c_release,
-                            "watched": "", "rating": "", "wlflg": False,
-                            "media_type": cand.get("media_type", "movie"), "tmdb_id": cand["id"],
-                            "details":    fetch_tmdb_details(cand["id"], cand.get("media_type","movie")),
-                            "isbn":       "",
-                            "location":   None, "media_label": media_label,
-                        }
-                    st.session_state.reg_cart.append(cart_item)
-                st.session_state.bulk_checked = {}
-                st.success(f"✅ {len(checked_indices)} 件を登録リストに追加しました")
-                st.rerun()
+            event_location = location_search_ui("event", media_label)
+            if st.button("📥 登録する", type="primary", key="event_register", disabled=not event_title):
+                watch_str = event_watch.isoformat() if event_watch else None
+                start_str = event_start.isoformat() if event_start else None
+                end_str   = event_end.isoformat()   if event_end   else None
 
-    # ── 書籍・漫画：次のページ取得 ──
-    if st.session_state.new_search_done and media_label in ("書籍", "漫画"):
+                # ── メモ生成 ──
+                memo_text = None
+                if has_setlist:
+                    main_items   = [x for x in st.session_state.get("ev_setlist_main",   []) if x["title"].strip()]
+                    encore_items = [x for x in st.session_state.get("ev_setlist_encore", []) if x["title"].strip()]
+                    def fmt(i, item):
+                        suffix = f" [{item['part']}]" if is_performance and item.get("part","").strip() else ""
+                        return f"{i+1}. {item['title']}{suffix}"
+                    lines = [fmt(i, x) for i, x in enumerate(main_items)]
+                    if encore_items:
+                        lines.append("")
+                        lines.append("[Encore]")
+                        lines += [fmt(i, x) for i, x in enumerate(encore_items)]
+                    memo_text = "\n".join(lines) if lines else None
+
+                ok = create_notion_page(
+                    jp_title=event_title, en_title=event_title,
+                    media_type_label=media_label,
+                    tmdb_id=None, media_type="event",
+                    cover_url=get_media_icon_url(media_label),
+                    tmdb_release=start_str or "",
+                    details={"genres": [event_genre] if event_genre else [], "cast": event_cast, "director": event_creator, "score": None},
+                    wlflg=wlflg,
+                    watched_date=watch_str,
+                    rating=rating_sel if rating_sel else None,
+                    event_end=end_str,
+                    location=event_location,
+                    memo=memo_text,
+                )
+                if ok:
+                    for key in ["ev_mb_composers", "ev_mb_works", "ev_mb_filter",
+                                "ev_it_results", "ev_setlist_main", "ev_setlist_encore"]:
+                        st.session_state.pop(key, None)
+                    show_post_register_ui()
+                else:
+                    st.error("❌ 登録失敗")
+            st.stop()
+
+        # ============================================================
+        # 演奏曲 - MusicBrainzカート登録
+        # ============================================================
+        if media_label == "演奏曲":
+            st.divider()
+            col_composer, col_title = st.columns([1, 1])
+            composer_input = col_composer.text_input("作曲家名", placeholder="例: Beethoven / ベートーヴェン")
+            title_filter   = col_title.text_input("曲名で絞り込み（任意）", placeholder="例: Symphony")
+
+            if st.button("🔍 検索", key="mb_composer_search"):
+                if composer_input:
+                    with st.spinner("作曲家を検索中..."):
+                        composers, err = search_mb_composer(composer_input)
+                    if err:
+                        st.error(f"⚠️ MusicBrainz API エラー: {err}")
+                    st.session_state.mb_composers     = composers
+                    st.session_state.mb_works         = []
+                    st.session_state.mb_title_filter  = title_filter
+                    st.session_state.mb_selected_comp = None
+                    if not composers and not err:
+                        st.warning("作曲家が見つかりませんでした。")
+                else:
+                    st.warning("作曲家名を入力してください")
+
+            if st.session_state.get("mb_composers"):
+                composers   = st.session_state.mb_composers
+                comp_labels = [
+                    f"{c['name']}" + (f"（{c['disambiguation']}）" if c['disambiguation'] else "") + (f" [{c['life_span']}–]" if c['life_span'] else "")
+                    for c in composers
+                ]
+                selected_idx = st.radio("作曲家を選択", range(len(comp_labels)), format_func=lambda i: comp_labels[i], key="mb_comp_radio")
+                if st.button("この作曲家の作品一覧を取得", key="mb_fetch_works"):
+                    selected_comp = composers[selected_idx]
+                    st.session_state.mb_selected_comp = selected_comp
+                    with st.spinner(f"{selected_comp['name']} の作品を取得中...（数分かかることがあります）"):
+                        works = search_mb_works(selected_comp["id"], st.session_state.mb_title_filter)
+                    st.session_state.mb_works   = works
+                    st.session_state.mb_checked = {}
+
+            if st.session_state.get("mb_works"):
+                works = st.session_state.mb_works
+                comp  = st.session_state.mb_selected_comp or {}
+                st.caption(f"{len(works)} 件の作品")
+                col_all, col_none = st.columns([1, 1])
+                if col_all.button("全選択",  key="mb_all"):
+                    for w in works: st.session_state.mb_checked[w["id"]] = True
+                if col_none.button("全解除", key="mb_none"):
+                    st.session_state.mb_checked = {}
+
+                for w in works:
+                    label = w["title"] + (f"　{w['disambiguation']}" if w["disambiguation"] else "")
+                    checked = st.checkbox(label, key=f"mb_{w['id']}", value=st.session_state.mb_checked.get(w["id"], False))
+                    if checked:
+                        st.session_state.mb_checked[w["id"]] = True
+                    else:
+                        st.session_state.mb_checked.pop(w["id"], None)
+
+                selected_works = [w for w in works if st.session_state.mb_checked.get(w["id"])]
+                if selected_works:
+                    st.info(f"{len(selected_works)} 件選択中")
+
+                    # 肖像画取得
+                    comp_name  = comp.get("name", "")
+                    artist_id  = comp.get("id", "")
+                    if "mb_portrait_url" not in st.session_state or st.session_state.get("mb_portrait_comp") != artist_id:
+                        with st.spinner(f"🖼️ {comp_name} の肖像画を取得中..."):
+                            portrait_url = get_composer_portrait_url(comp_name, artist_id)
+                        st.session_state.mb_portrait_url  = portrait_url
+                        st.session_state.mb_portrait_comp = artist_id
+                    else:
+                        portrait_url = st.session_state.mb_portrait_url
+
+                    if portrait_url:
+                        if portrait_url.startswith("https://drive.google.com"):
+                            try:
+                                img_res = requests.get(portrait_url, timeout=8)
+                                st.image(io.BytesIO(img_res.content), width=120, caption=comp_name)
+                            except Exception:
+                                st.image(portrait_url, width=120, caption=comp_name)
+                        else:
+                            st.image(portrait_url, width=120, caption=comp_name)
+                        cover_url_final = portrait_url
+                    else:
+                        st.warning(f"⚠️ {comp_name} の肖像画が見つかりませんでした。画像をアップロードしてください。")
+                        uploaded = st.file_uploader("肖像画をアップロード", type=["jpg", "jpeg", "png"], key="mb_portrait_upload")
+                        if uploaded:
+                            default_fname = sanitize_filename(comp_name)
+                            custom_fname  = st.text_input(
+                                "Drive保存名（変更可）",
+                                value=default_fname,
+                                key="mb_portrait_fname",
+                                help="この名前でDriveに保存されます。デフォルト名のままにしておくと、次回以降この作曲家を選択した際に自動で使いまわせます。",
+                            )
+                            if custom_fname != default_fname:
+                                st.caption("⚠️ 名前を変更すると次回自動使用されません。このセッションのみ有効です。")
+                            save_fname = f"portrait_{custom_fname}.jpg"
+                            img_bytes = uploaded.read()
+                            mimetype  = "image/png" if uploaded.name.endswith(".png") else "image/jpeg"
+                            with st.spinner("Driveに保存中..."):
+                                service = get_drive_service_safe()
+                                media   = MediaIoBaseUpload(io.BytesIO(img_bytes), mimetype=mimetype, resumable=False)
+                                result  = service.files().create(
+                                    body={"name": save_fname, "parents": [DRIVE_FOLDER_ID]},
+                                    media_body=media, fields="id",
+                                ).execute()
+                                file_id = result["id"]
+                                st.session_state.drive_files_cache[save_fname] = file_id
+                                service.permissions().create(fileId=file_id, body={"role": "reader", "type": "anyone"}).execute()
+                                cover_url_final = f"https://drive.google.com/uc?id={file_id}"
+                                if custom_fname == default_fname:
+                                    st.session_state.mb_portrait_url  = cover_url_final
+                                    st.session_state.mb_portrait_comp = artist_id
+                            st.image(io.BytesIO(img_bytes), width=120, caption=comp_name)
+                        else:
+                            cover_url_final = MB_DEFAULT_COVER
+
+                    if st.button(f"📋 {len(selected_works)} 件を登録リストに追加", key="mb_add_cart"):
+                        for w in selected_works:
+                            st.session_state.reg_cart.append({
+                                "jp_title":    w["title"],
+                                "en_title":    w["title"],
+                                "cover_url":   cover_url_final,
+                                "release":     "",
+                                "watched":     "",
+                                "rating":      "",
+                                "wlflg":       False,
+                                "media_type":  "score",
+                                "tmdb_id":     0,
+                                "details":     {"genres": [], "cast": "", "director": comp_name, "score": None},
+                                "isbn":        "",
+                                "location":    None,
+                                "media_label": media_label,
+                            })
+                        st.session_state.mb_checked = {}
+                        st.success(f"✅ {len(selected_works)} 件を登録リストに追加しました")
+            st.stop()
+
+        # ============================================================
+        # 通常媒体（映画・ドラマ・書籍・漫画・音楽アルバム・ゲーム・アニメ）
+        # ============================================================
         st.divider()
-        next_page = st.session_state.rakuten_page + 1
-        if st.button(f"📖 次の30件を取得（{next_page}ページ目）", key="rakuten_next_page"):
-            with st.spinner(f"{next_page}ページ目を取得中..."):
-                q_key = st.session_state.rakuten_query_key
-                parts = q_key.split("|") if q_key else ["", "", ""]
-                _media, _query, _author = parts[0], parts[1], parts[2] if len(parts) > 2 else ""
+
+        if media_label in ["音楽アルバム"]:
+            col_jp, col_en = st.columns([1, 1])
+            jp_input      = clearable_text_input("アルバム名", "inp_jp_album", placeholder="例: 千のナイフ", container=col_jp)
+            creator_input = clearable_text_input("アーティスト名", "inp_creator_album", placeholder="例: 坂本龍一", container=col_en)
+            cast_input    = ""
+            en_input      = ""
+        elif media_label == "ゲーム":
+            jp_input      = clearable_text_input("ゲームタイトル", "inp_jp_game", placeholder="例: ゼルダの伝説")
+            creator_input = ""
+            cast_input    = ""
+            en_input      = jp_input
+        elif media_label == "アニメ":
+            jp_input      = clearable_text_input("アニメタイトル", "inp_jp_anime", placeholder="例: 鬼滅の刃 / Demon Slayer")
+            creator_input = ""
+            cast_input    = ""
+            en_input      = jp_input
+        elif media_label == "漫画":
+            col_jp, col_en = st.columns([1, 1])
+            jp_input      = clearable_text_input("タイトル", "inp_jp_manga", placeholder="例: 鬼滅の刃", container=col_jp)
+            creator_input = clearable_text_input("著者名", "inp_creator_manga", placeholder="例: 吾峠呼世晴", container=col_en)
+            cast_input    = ""
+            en_input      = ""
+        else:
+            col_jp, col_en = st.columns([1, 1])
+            jp_input      = clearable_text_input("日本語タイトル", "inp_jp_main", placeholder="例: 千と千尋の神隠し", container=col_jp)
+            en_input      = clearable_text_input("英語タイトル（検索用）", "inp_en_main", placeholder="例: Spirited Away", container=col_en)
+            col_creator, col_cast = st.columns([1, 1])
+            creator_input = clearable_text_input("クリエイター（著者・監督）", "inp_creator_main", placeholder="例: 宮崎駿 / 道尾秀介", container=col_creator)
+            cast_input    = clearable_text_input("キャスト・関係者", "inp_cast_main", placeholder="例: 木村拓哉", container=col_cast)
+
+        if st.button("🔍 検索", key="new_search"):
+            query = en_input if en_input else jp_input
+            if query or creator_input or cast_input:
                 if media_label == "書籍":
-                    new_results = search_books(_query or "", author=_author or None, page=next_page)
+                    results = search_books(query or "", author=creator_input or None)
+                elif media_label == "漫画":
+                    results = search_manga(query or "", author=creator_input or None)
+                elif media_label == "音楽アルバム":
+                    results = search_albums(query or "", artist=creator_input or None)
+                elif media_label == "ゲーム":
+                    results = search_games(query or jp_input)
+                elif media_label == "アニメ":
+                    results = search_anime(query or jp_input)
                 else:
-                    new_results = search_manga(_query or "", author=_author or None, page=next_page)
-                if new_results:
-                    reg_ids = get_registered_ids(st.session_state.pages)
-                    filtered, excluded = filter_registered(new_results, media_label, reg_ids)
-                    # 既存結果に追記（タイトル重複除去）
-                    existing_titles = {c.get("title", "") for c in st.session_state.new_search_results}
-                    added = [c for c in filtered if c.get("title", "") not in existing_titles]
-                    st.session_state.new_search_results  = st.session_state.new_search_results + added
-                    st.session_state.new_search_excluded = st.session_state.new_search_excluded + excluded
-                    st.session_state.rakuten_page        = next_page
-                    if added:
-                        st.success(f"✅ {len(added)} 件追加（除外: {len(excluded)} 件）")
+                    tmdb_mt = "movie" if media_label == "映画" else "tv"
+                    if creator_input or cast_input:
+                        results = search_tmdb_by_person(creator_input or cast_input, media_type=tmdb_mt)
                     else:
-                        st.info("新しい結果はありませんでした")
-                    st.rerun()
+                        results = search_tmdb(query, media_type=tmdb_mt)
+                reg_ids = get_registered_ids(st.session_state.pages)
+                filtered, excluded = filter_registered(results, media_label, reg_ids)
+                st.session_state.new_search_results  = filtered[:20]
+                st.session_state.new_search_excluded = excluded
+                st.session_state.new_search_done     = True
+                st.session_state.confirm_reg         = None
+                st.session_state.bulk_checked        = {}
+                st.session_state.rakuten_page        = 1
+                st.session_state.rakuten_query_key   = f"{media_label}|{query}|{creator_input}"
+            else:
+                st.warning("タイトルまたはクリエイター名を入力してください")
+
+        # ── 単体確認画面 ──
+        if st.session_state.confirm_reg is not None:
+            reg = st.session_state.confirm_reg
+            st.divider()
+            st.subheader("📝 登録内容の確認・修正")
+            c1, c2 = st.columns([1, 2])
+            with c1:
+                if reg.get("cover_url"):
+                    st.image(reg["cover_url"])
+                st.caption(f"{reg['cand_en']} ({reg['media_type']}) {reg['tmdb_release']} 🆔 {reg.get('tmdb_id','')}")
+            with c2:
+                final_jp = clearable_text_input("日本語タイトル（修正可）", "final_jp", value=reg.get("jp_input", jp_input))
+                final_en = clearable_text_input("英語タイトル（修正可）", "final_en", value=reg["cand_en"])
+                if media_label in ("書籍", "漫画"):
+                    final_isbn = st.text_input("ISBN", value=reg.get("isbn", ""), key="final_isbn")
                 else:
-                    st.info("これ以上の結果はありません")
+                    final_isbn = None
 
-    # ── 登録リスト確認・編集・一括登録 ──
-    if st.session_state.reg_cart:
-        st.divider()
-        st.subheader(f"📋 登録リスト（{len(st.session_state.reg_cart)} 件）")
-        date_label = {"ゲーム": "クリア日", "音楽アルバム": "聴いた日", "書籍": "読了日", "漫画": "読了日", "演奏曲": "演奏日", "アニメ": "視聴日"}.get(media_label, "鑑賞日")
+                include_tracks = False
+                tracks_text    = ""
+                if media_label == "音楽アルバム" and reg.get("tmdb_id") == 0:
+                    collection_id = reg.get("itunes_id", 0)
+                    if collection_id:
+                        if "album_tracks_cache" not in st.session_state or st.session_state.get("album_tracks_id") != collection_id:
+                            with st.spinner("トラックリスト取得中..."):
+                                tracks = fetch_itunes_tracks(collection_id)
+                                st.session_state.album_tracks_cache = tracks
+                                st.session_state.album_tracks_id    = collection_id
+                        else:
+                            tracks = st.session_state.album_tracks_cache
+                        if tracks:
+                            tracks_text    = "\n".join(f"{t['no']}. {t['name']}" for t in tracks)
+                            include_tracks = st.checkbox("トラックリストをメモに追加", value=True, key="include_tracks")
+                            if include_tracks:
+                                st.caption(tracks_text)
 
-        remove_indices = []
-        for idx, item in enumerate(st.session_state.reg_cart):
-            item_media = item.get("media_label", media_label)
-            with st.expander(f"{idx+1}. {item['jp_title']}", expanded=True):
-                cols = st.columns([2, 1, 2, 2, 1, 1])
-                item["jp_title"] = cols[0].text_input("日本語タイトル", value=item["jp_title"], key=f"cart_jp_{idx}")
-                item["release"]  = cols[1].text_input("リリース日", value=item.get("release",""), key=f"cart_rel_{idx}")
-                date_val = None
-                if item.get("watched"):
-                    try: date_val = date.fromisoformat(item["watched"])
-                    except: pass
-                item_date_label  = {"ゲーム": "クリア日", "音楽アルバム": "聴いた日", "書籍": "読了日", "漫画": "読了日", "演奏曲": "演奏日", "アニメ": "視聴日"}.get(item_media, "鑑賞日")
-                watched_input    = cols[2].date_input(item_date_label, value=date_val, key=f"cart_watch_{idx}")
-                item["watched"]  = watched_input.isoformat() if watched_input else ""
-                item["rating"]   = cols[3].selectbox("評価", RATING_OPTIONS, index=RATING_OPTIONS.index(item.get("rating","")) if item.get("rating","") in RATING_OPTIONS else 0, key=f"cart_rating_{idx}")
-                item["wlflg"]    = cols[4].checkbox("WL", value=item.get("wlflg", False), key=f"cart_wl_{idx}")
-                if cols[5].button("🗑", key=f"cart_del_{idx}"):
-                    remove_indices.append(idx)
-                item["location"] = location_search_ui(f"cart_{idx}", item_media)
-
-        for i in sorted(remove_indices, reverse=True):
-            st.session_state.reg_cart.pop(i)
-        if remove_indices:
-            st.rerun()
-
-        col_reg, col_clear = st.columns([2, 1])
-        with col_reg:
-            if st.button(f"📥 {len(st.session_state.reg_cart)} 件を一括登録", type="primary", key="bulk_register"):
                 if not st.session_state.pages_loaded:
-                    with st.spinner("Notionデータ取得中..."):
+                    with st.spinner("重複チェック中..."):
                         all_pages = load_notion_data()
                         st.session_state.pages        = filter_target_pages(all_pages)
                         st.session_state.pages_loaded = True
-                success_count = 0
-                prog = st.progress(0)
-                for n, item in enumerate(st.session_state.reg_cart):
-                    ok = create_notion_page(
-                        jp_title=item["jp_title"], en_title=item.get("en_title",""),
-                        media_type_label=item.get("media_label", media_label),
-                        tmdb_id=item["tmdb_id"], media_type=item["media_type"],
-                        cover_url=item["cover_url"], tmdb_release=item.get("release",""),
-                        details=item["details"], wlflg=item.get("wlflg", False),
-                        watched_date=item["watched"] or None,
-                        rating=item["rating"] or None,
-                        isbn=item.get("isbn") or None,
-                        igdb_id=item.get("igdb_id"),
-                        itunes_id=item.get("itunes_id"),
-                        anilist_id=item.get("anilist_id"),
-                        location=item.get("location"),
-                    )
-                    if ok:
-                        if item["media_type"] in ("movie", "tv"):
-                            save_to_drive(item["cover_url"], item["jp_title"] or item.get("en_title",""), item["tmdb_id"])
-                        success_count += 1
-                    prog.progress((n + 1) / len(st.session_state.reg_cart))
-                    time.sleep(0.3)
-                for key in ["reg_cart", "new_search_results", "new_search_done",
-                            "bulk_checked", "album_tracks_cache", "album_tracks_id"]:
-                    st.session_state.pop(key, None)
-                st.success(f"✅ {success_count} 件登録完了！")
-                show_post_register_ui()
-        with col_clear:
-            if st.button("🗑 登録リストをクリア", key="cart_clear"):
-                st.session_state.reg_cart = []
+                dupes = check_duplicate(reg.get("tmdb_id", 0), st.session_state.pages)
+                if dupes:
+                    dupe_titles = "、".join([get_title(d["properties"])[0] for d in dupes])
+                    st.warning(f"⚠️ 登録済のデータがあります：{dupe_titles}\nそれでも登録しますか？")
+
+                date_label   = {"ゲーム": "クリア日", "音楽アルバム": "聴いた日", "書籍": "読了日", "漫画": "読了日", "アニメ": "視聴日"}.get(media_label, "鑑賞日")
+                col_wl, col_date, col_rating = st.columns([1, 2, 2])
+                wlflg        = col_wl.checkbox("WLflg", value=False, key="confirm_wl")
+                watched_date = col_date.date_input(date_label, value=None, key="confirm_date")
+                rating_sel   = col_rating.selectbox("評価", RATING_OPTIONS, key="confirm_rating")
+                st.divider()
+                confirm_location = location_search_ui("confirm", media_label)
+
+                col_ok, col_cancel = st.columns([1, 1])
+                with col_ok:
+                    if st.button("✅ 登録する", key="confirm_ok", disabled=st.session_state.registering):
+                        st.session_state.registering = True
+                        st.rerun()
+                with col_cancel:
+                    if st.button("❌ キャンセル", key="confirm_cancel", disabled=st.session_state.registering):
+                        st.session_state.confirm_reg = None
+                        st.rerun()
+
+                if st.session_state.registering:
+                    with st.spinner("登録中..."):
+                        if reg["media_type"] in ("book", "manga"):
+                            details = {"genres": reg.get("book_genres", []), "cast": "", "director": clean_author_list(reg.get("book_authors", [])), "score": None}
+                        elif reg["media_type"] in ("album", "game"):
+                            details = {"genres": reg.get("book_genres", []), "cast": reg.get("game_publisher", ""), "director": clean_author_list(reg.get("book_authors", [])), "score": None}
+                        elif reg["media_type"] == "anime":
+                            details = {"genres": reg.get("book_genres", []), "cast": "", "director": clean_author_list(reg.get("book_authors", [])), "score": reg.get("anime_score")}
+                        else:
+                            details = fetch_tmdb_details(reg["tmdb_id"], reg["media_type"])
+                        watched_str  = watched_date.isoformat() if watched_date else None
+                        page_tmdb_id = 0 if reg["media_type"] not in ("movie", "tv") else reg["tmdb_id"]
+                        memo_text = None
+                        if reg["media_type"] == "album" and st.session_state.get("include_tracks", False):
+                            tracks = st.session_state.get("album_tracks_cache", [])
+                            if tracks:
+                                memo_text = "\n".join(f"{t['no']}. {t['name']}" for t in tracks)
+                        ok = create_notion_page(
+                            jp_title=final_jp, en_title=final_en,
+                            media_type_label=media_label,
+                            tmdb_id=page_tmdb_id, media_type=reg["media_type"],
+                            cover_url=reg["cover_url"], tmdb_release=reg["tmdb_release"],
+                            details=details, wlflg=wlflg,
+                            watched_date=watched_str,
+                            rating=rating_sel if rating_sel else None,
+                            isbn=final_isbn or None,
+                            memo=memo_text,
+                            location=confirm_location,
+                            igdb_id=reg.get("igdb_id"),
+                            itunes_id=reg.get("itunes_id"),
+                            anilist_id=reg.get("anilist_id"),
+                        )
+                        st.session_state.registering = False
+                        if ok:
+                            if reg["media_type"] in ("movie", "tv"):
+                                save_to_drive(reg["cover_url"], final_jp or final_en, reg["tmdb_id"])
+                            st.session_state.confirm_reg        = None
+                            st.session_state.new_search_results = []
+                            st.session_state.new_search_done    = False
+                            for key in ["confirm_reg", "new_search_results", "new_search_done", "bulk_checked"]:
+                                st.session_state.pop(key, None)
+                            show_post_register_ui()
+                        else:
+                            st.error("❌ 登録失敗")
+
+        # ── 検索結果一覧（カード＋チェック）──
+        elif st.session_state.new_search_results:
+            results_list = st.session_state.new_search_results
+            excluded_list = st.session_state.get("new_search_excluded", [])
+            st.caption(f"{len(results_list)} 件の候補　チェックして登録リストに追加できます")
+            if excluded_list:
+                st.caption(f"⚠️ {len(excluded_list)} 件は登録済みのため除外")
+                with st.expander("除外されたタイトルを表示"):
+                    for t in excluded_list:
+                        st.caption(f"・{t}")
+
+            for row_start in range(0, len(results_list), 3):
+                cols = st.columns(3)
+                for col_idx, cand in enumerate(results_list[row_start:row_start + 3]):
+                    abs_idx = row_start + col_idx
+                    with cols[col_idx]:
+                        cand_type = cand.get("media_type", "")
+                        if media_label in ("書籍", "漫画"):
+                            cover_url     = cand["cover_url"]
+                            tmdb_release  = cand.get("published", "")
+                            media_type    = cand_type
+                            cand_en       = ""
+                            display_title = cand["title"]
+                            authors       = " / ".join(cand.get("authors", []))
+                        elif media_label == "音楽アルバム":
+                            cover_url     = cand["cover_url"]
+                            tmdb_release  = cand.get("release", "")
+                            media_type    = "album"
+                            cand_en       = ""
+                            display_title = cand["title"]
+                            authors       = cand.get("artist", "")
+                        elif media_label == "ゲーム":
+                            cover_url     = cand["cover_url"]
+                            tmdb_release  = cand.get("release", "")
+                            media_type    = "game"
+                            cand_en       = cand["title"]
+                            display_title = cand["title"]
+                            authors       = cand.get("developer", "")
+                        elif media_label == "アニメ":
+                            cover_url     = cand["cover_url"]
+                            tmdb_release  = cand.get("release", "")
+                            media_type    = "anime"
+                            cand_en       = cand.get("title_en") or cand.get("title_romaji", "")
+                            display_title = cand["title"]
+                            authors       = cand.get("director", "")
+                        else:
+                            cover_url    = f"https://image.tmdb.org/t/p/w600_and_h900_bestv2{cand['poster_path']}"
+                            tmdb_release = cand.get("release_date") or cand.get("first_air_date") or ""
+                            media_type   = cand.get("media_type", "movie")
+                            cand_en      = cand.get("title") or cand.get("name", "")
+                            display_title = cand_en
+                            authors      = ""
+
+                        checked = st.checkbox(
+                            f"**{display_title}**",
+                            key=f"chk_{abs_idx}",
+                            value=st.session_state.bulk_checked.get(abs_idx, False),
+                        )
+                        st.session_state.bulk_checked[abs_idx] = checked
+
+                        if cover_url:
+                            try:
+                                st.image(cover_url)
+                            except Exception:
+                                st.caption("📷 画像取得失敗")
+                        else:
+                            st.caption("📷 画像なし")
+                        if authors:      st.caption(f"{'著者' if media_label in ('書籍','漫画') else 'アーティスト' if media_label == '音楽アルバム' else '開発'}: {authors}")
+                        if tmdb_release: st.caption(f"{'出版' if media_label in ('書籍','漫画') else 'リリース'}: {tmdb_release}")
+                        if media_label not in ("書籍", "漫画", "音楽アルバム", "ゲーム", "アニメ"):
+                            st.caption(f"🆔 {cand['id']}")
+
+                        if st.button("✅ 単体登録", key=f"new_reg_{abs_idx}"):
+                            if media_label in ("書籍", "漫画"):
+                                st.session_state.confirm_reg = {
+                                    "tmdb_id": cand["id"], "cover_url": cand["cover_url"],
+                                    "tmdb_release": cand.get("published", ""), "media_type": cand_type,
+                                    "cand_en": "", "jp_input": cand["title"],
+                                    "book_authors": cand.get("authors", []), "book_genres": cand.get("genres", []),
+                                    "isbn": cand.get("isbn", ""),
+                                }
+                            elif media_label == "音楽アルバム":
+                                st.session_state.confirm_reg = {
+                                    "tmdb_id": 0, "itunes_id": cand["id"], "cover_url": cand["cover_url"],
+                                    "tmdb_release": cand.get("release", ""), "media_type": "album",
+                                    "cand_en": cand["title"], "jp_input": "",
+                                    "book_authors": [cand.get("artist", "")], "book_genres": [], "isbn": "",
+                                }
+                            elif media_label == "ゲーム":
+                                st.session_state.confirm_reg = {
+                                    "tmdb_id": 0, "cover_url": cand["cover_url"],
+                                    "tmdb_release": cand.get("release", ""), "media_type": "game",
+                                    "cand_en": cand["title"], "jp_input": cand["title"],
+                                    "book_authors": [cand.get("developer", "")], "book_genres": cand.get("genres", []),
+                                    "isbn": "", "game_publisher": cand.get("publisher", ""),
+                                    "igdb_id": cand.get("id"),
+                                }
+                            elif media_label == "アニメ":
+                                st.session_state.confirm_reg = {
+                                    "tmdb_id": 0, "cover_url": cand["cover_url"],
+                                    "tmdb_release": cand.get("release", ""), "media_type": "anime",
+                                    "cand_en": cand.get("title_en") or cand.get("title_romaji", ""),
+                                    "jp_input": cand["title"],
+                                    "book_authors": [cand.get("director", "")],
+                                    "book_genres": cand.get("genres", []),
+                                    "isbn": "", "anime_score": cand.get("score"),
+                                    "anilist_id": cand.get("id"),
+                                }
+                            else:
+                                with st.spinner("日本語タイトル取得中..."):
+                                    ja_title = fetch_tmdb_ja_title(cand["id"], media_type)
+                                st.session_state.confirm_reg = {
+                                    "tmdb_id": cand["id"], "cover_url": cover_url,
+                                    "tmdb_release": tmdb_release, "media_type": media_type,
+                                    "cand_en": cand_en, "jp_input": ja_title or jp_input,
+                                }
+                            st.rerun()
+
+            # ── 登録リストに追加ボタン ──
+            checked_indices = [i for i, v in st.session_state.bulk_checked.items() if v]
+            if checked_indices:
+                st.divider()
+                st.caption(f"✅ {len(checked_indices)} 件選択中")
+                if st.button(f"📋 {len(checked_indices)} 件を登録リストに追加", type="primary", key="add_to_cart"):
+                    for i in checked_indices:
+                        cand   = results_list[i]
+                        c_type = cand.get("media_type", "")
+                        if media_label in ("書籍", "漫画"):
+                            cart_item = {
+                                "jp_title":   cand["title"], "en_title": "",
+                                "cover_url":  cand["cover_url"], "release": cand.get("published", ""),
+                                "watched": "", "rating": "", "wlflg": False,
+                                "media_type": c_type, "tmdb_id": 0,
+                                "details":    {"genres": cand.get("genres", []), "cast": "", "director": clean_author_list(cand.get("authors", [])), "score": None},
+                                "isbn":       cand.get("isbn", ""),
+                                "location":   None, "media_label": media_label,
+                            }
+                        elif media_label == "音楽アルバム":
+                            cart_item = {
+                                "jp_title":   cand["title"], "en_title": "",
+                                "cover_url":  cand["cover_url"], "release": cand.get("release", ""),
+                                "watched": "", "rating": "", "wlflg": False,
+                                "media_type": "album", "tmdb_id": 0,
+                                "details":    {"genres": [], "cast": "", "director": clean_author(cand.get("artist", "")), "score": None},
+                                "isbn":       "", "itunes_id": cand.get("id"),
+                                "location":   None, "media_label": media_label,
+                            }
+                        elif media_label == "ゲーム":
+                            cart_item = {
+                                "jp_title":   cand["title"], "en_title": cand["title"],
+                                "cover_url":  cand["cover_url"], "release": cand.get("release", ""),
+                                "watched": "", "rating": "", "wlflg": False,
+                                "media_type": "game", "tmdb_id": 0,
+                                "details":    {"genres": cand.get("genres", []), "cast": cand.get("publisher", ""), "director": clean_author(cand.get("developer", "")), "score": None},
+                                "isbn":       "", "igdb_id": cand.get("id"),
+                                "location":   None, "media_label": media_label,
+                            }
+                        elif media_label == "アニメ":
+                            cart_item = {
+                                "jp_title":   cand["title"],
+                                "en_title":   cand.get("title_en") or cand.get("title_romaji", ""),
+                                "cover_url":  cand["cover_url"], "release": cand.get("release", ""),
+                                "watched": "", "rating": "", "wlflg": False,
+                                "media_type": "anime", "tmdb_id": 0,
+                                "details":    {"genres": cand.get("genres", []), "cast": "", "director": cand.get("director", ""), "score": cand.get("score")},
+                                "isbn":       "", "anilist_id": cand.get("id"),
+                                "location":   None, "media_label": media_label,
+                            }
+                        else:
+                            c_cover   = f"https://image.tmdb.org/t/p/w600_and_h900_bestv2{cand['poster_path']}"
+                            c_release = cand.get("release_date") or cand.get("first_air_date") or ""
+                            c_en      = cand.get("title") or cand.get("name", "")
+                            with st.spinner(f"日本語タイトル取得中... ({i+1}/{len(checked_indices)})"):
+                                c_jp = fetch_tmdb_ja_title(cand["id"], cand.get("media_type","movie")) or c_en
+                            cart_item = {
+                                "jp_title":   c_jp, "en_title": c_en,
+                                "cover_url":  c_cover, "release": c_release,
+                                "watched": "", "rating": "", "wlflg": False,
+                                "media_type": cand.get("media_type", "movie"), "tmdb_id": cand["id"],
+                                "details":    fetch_tmdb_details(cand["id"], cand.get("media_type","movie")),
+                                "isbn":       "",
+                                "location":   None, "media_label": media_label,
+                            }
+                        st.session_state.reg_cart.append(cart_item)
+                    st.session_state.bulk_checked = {}
+                    st.success(f"✅ {len(checked_indices)} 件を登録リストに追加しました")
+                    st.rerun()
+
+        # ── 書籍・漫画：次のページ取得 ──
+        if st.session_state.new_search_done and media_label in ("書籍", "漫画"):
+            st.divider()
+            next_page = st.session_state.rakuten_page + 1
+            if st.button(f"📖 次の30件を取得（{next_page}ページ目）", key="rakuten_next_page"):
+                with st.spinner(f"{next_page}ページ目を取得中..."):
+                    q_key = st.session_state.rakuten_query_key
+                    parts = q_key.split("|") if q_key else ["", "", ""]
+                    _media, _query, _author = parts[0], parts[1], parts[2] if len(parts) > 2 else ""
+                    if media_label == "書籍":
+                        new_results = search_books(_query or "", author=_author or None, page=next_page)
+                    else:
+                        new_results = search_manga(_query or "", author=_author or None, page=next_page)
+                    if new_results:
+                        reg_ids = get_registered_ids(st.session_state.pages)
+                        filtered, excluded = filter_registered(new_results, media_label, reg_ids)
+                        # 既存結果に追記（タイトル重複除去）
+                        existing_titles = {c.get("title", "") for c in st.session_state.new_search_results}
+                        added = [c for c in filtered if c.get("title", "") not in existing_titles]
+                        st.session_state.new_search_results  = st.session_state.new_search_results + added
+                        st.session_state.new_search_excluded = st.session_state.new_search_excluded + excluded
+                        st.session_state.rakuten_page        = next_page
+                        if added:
+                            st.success(f"✅ {len(added)} 件追加（除外: {len(excluded)} 件）")
+                        else:
+                            st.info("新しい結果はありませんでした")
+                        st.rerun()
+                    else:
+                        st.info("これ以上の結果はありません")
+
+        # ── 登録リスト確認・編集・一括登録 ──
+        if st.session_state.reg_cart:
+            st.divider()
+            st.subheader(f"📋 登録リスト（{len(st.session_state.reg_cart)} 件）")
+            date_label = {"ゲーム": "クリア日", "音楽アルバム": "聴いた日", "書籍": "読了日", "漫画": "読了日", "演奏曲": "演奏日", "アニメ": "視聴日"}.get(media_label, "鑑賞日")
+
+            remove_indices = []
+            for idx, item in enumerate(st.session_state.reg_cart):
+                item_media = item.get("media_label", media_label)
+                with st.expander(f"{idx+1}. {item['jp_title']}", expanded=True):
+                    cols = st.columns([2, 1, 2, 2, 1, 1])
+                    item["jp_title"] = cols[0].text_input("日本語タイトル", value=item["jp_title"], key=f"cart_jp_{idx}")
+                    item["release"]  = cols[1].text_input("リリース日", value=item.get("release",""), key=f"cart_rel_{idx}")
+                    date_val = None
+                    if item.get("watched"):
+                        try: date_val = date.fromisoformat(item["watched"])
+                        except: pass
+                    item_date_label  = {"ゲーム": "クリア日", "音楽アルバム": "聴いた日", "書籍": "読了日", "漫画": "読了日", "演奏曲": "演奏日", "アニメ": "視聴日"}.get(item_media, "鑑賞日")
+                    watched_input    = cols[2].date_input(item_date_label, value=date_val, key=f"cart_watch_{idx}")
+                    item["watched"]  = watched_input.isoformat() if watched_input else ""
+                    item["rating"]   = cols[3].selectbox("評価", RATING_OPTIONS, index=RATING_OPTIONS.index(item.get("rating","")) if item.get("rating","") in RATING_OPTIONS else 0, key=f"cart_rating_{idx}")
+                    item["wlflg"]    = cols[4].checkbox("WL", value=item.get("wlflg", False), key=f"cart_wl_{idx}")
+                    if cols[5].button("🗑", key=f"cart_del_{idx}"):
+                        remove_indices.append(idx)
+                    item["location"] = location_search_ui(f"cart_{idx}", item_media)
+
+            for i in sorted(remove_indices, reverse=True):
+                st.session_state.reg_cart.pop(i)
+            if remove_indices:
                 st.rerun()
 
-    st.stop()
+            col_reg, col_clear = st.columns([2, 1])
+            with col_reg:
+                if st.button(f"📥 {len(st.session_state.reg_cart)} 件を一括登録", type="primary", key="bulk_register"):
+                    if not st.session_state.pages_loaded:
+                        with st.spinner("Notionデータ取得中..."):
+                            all_pages = load_notion_data()
+                            st.session_state.pages        = filter_target_pages(all_pages)
+                            st.session_state.pages_loaded = True
+                    success_count = 0
+                    prog = st.progress(0)
+                    for n, item in enumerate(st.session_state.reg_cart):
+                        ok = create_notion_page(
+                            jp_title=item["jp_title"], en_title=item.get("en_title",""),
+                            media_type_label=item.get("media_label", media_label),
+                            tmdb_id=item["tmdb_id"], media_type=item["media_type"],
+                            cover_url=item["cover_url"], tmdb_release=item.get("release",""),
+                            details=item["details"], wlflg=item.get("wlflg", False),
+                            watched_date=item["watched"] or None,
+                            rating=item["rating"] or None,
+                            isbn=item.get("isbn") or None,
+                            igdb_id=item.get("igdb_id"),
+                            itunes_id=item.get("itunes_id"),
+                            anilist_id=item.get("anilist_id"),
+                            location=item.get("location"),
+                        )
+                        if ok:
+                            if item["media_type"] in ("movie", "tv"):
+                                save_to_drive(item["cover_url"], item["jp_title"] or item.get("en_title",""), item["tmdb_id"])
+                            success_count += 1
+                        prog.progress((n + 1) / len(st.session_state.reg_cart))
+                        time.sleep(0.3)
+                    for key in ["reg_cart", "new_search_results", "new_search_done",
+                                "bulk_checked", "album_tracks_cache", "album_tracks_id"]:
+                        st.session_state.pop(key, None)
+                    st.success(f"✅ {success_count} 件登録完了！")
+                    show_post_register_ui()
+            with col_clear:
+                if st.button("🗑 登録リストをクリア", key="cart_clear"):
+                    st.session_state.reg_cart = []
+                    st.rerun()
+
+        st.stop()
 
 target_pages = st.session_state.pages
 
