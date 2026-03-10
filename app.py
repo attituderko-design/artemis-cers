@@ -1392,7 +1392,7 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 st.image("assets/logo.png", width=320)
-st.caption("v4.73")
+st.caption("v4.74")
 
 for key, default in {
     "is_running":         False,
@@ -1637,7 +1637,7 @@ if mode == "新規登録":
                                     watched_date=r["date"],
                                     rating=r["rating"],
                                     memo=r["memo"],
-                                    location=r["location"],
+                                    location=None,  # TODO: 文字列→lat/lon変換は未実装、インポート後にデータ管理で設定
                                 )
                                 if ok:
                                     success += 1
