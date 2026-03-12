@@ -1798,7 +1798,7 @@ st.markdown(
     "<em><strong>ArtéMis</strong></em> — named after the goddess of the hunt and the moon. She keeps track of everything you've ever experienced.",
     unsafe_allow_html=True
 )
-st.caption("v5.30")
+st.caption("v5.31")
 
 for key, default in {
     "is_running":         False,
@@ -2904,13 +2904,16 @@ if mode == "新規登録":
                         st.info("これ以上の結果はありません")
 
         # ── 登録リスト確認・編集・一括登録 ──
-        if st.session_state.reg_cart:
+        reg_cart = st.session_state.get("reg_cart", [])
+        if "reg_cart" not in st.session_state:
+            st.session_state.reg_cart = reg_cart
+        if reg_cart:
             st.divider()
-            st.subheader(f"📋 登録リスト（{len(st.session_state.reg_cart)} 件）")
+            st.subheader(f"📋 登録リスト（{len(reg_cart)} 件）")
             date_label = {"ゲーム": "クリア日", "音楽アルバム": "聴いた日", "書籍": "読了日", "漫画": "読了日", "演奏曲": "演奏日", "アニメ": "視聴日"}.get(media_label, "鑑賞日")
 
             remove_indices = []
-            for idx, item in enumerate(st.session_state.reg_cart):
+            for idx, item in enumerate(reg_cart):
                 item_media = item.get("media_label", media_label)
                 with st.expander(f"{idx+1}. {item['jp_title']}", expanded=True):
                     cols = st.columns([2, 1, 2, 2, 1, 1])
