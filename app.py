@@ -1794,7 +1794,10 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 st.image("assets/logo.png", width=320)
-st.markdown("*_ArtéMis_* — named after the goddess of the hunt and the moon. She keeps track of everything you've ever experienced.")
+st.markdown(
+    "<em><strong>ArtéMis</strong></em> — named after the goddess of the hunt and the moon. She keeps track of everything you've ever experienced.",
+    unsafe_allow_html=True
+)
 st.caption("v5.12")
 
 for key, default in {
