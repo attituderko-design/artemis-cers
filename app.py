@@ -2634,7 +2634,7 @@ if mode == "新規登録":
                     st.rerun()
 
         # ── 書籍・漫画：次のページ取得 ──
-        if st.session_state.new_search_done and media_label in ("書籍", "漫画"):
+        if st.session_state.get("new_search_done", False) and media_label in ("書籍", "漫画"):
             st.divider()
             next_page = st.session_state.rakuten_page + 1
             if st.button(f"📖 次の30件を取得（{next_page}ページ目）", key="rakuten_next_page"):
