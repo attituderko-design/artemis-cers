@@ -1795,7 +1795,7 @@ st.markdown("""
 
 st.image("assets/logo.png", width=320)
 st.caption("ArtéMis — named after the goddess of the hunt and the moon. She keeps track of everything you've ever experienced.")
-st.caption("v5.10")
+st.caption("v5.11")
 
 for key, default in {
     "is_running":         False,
@@ -2337,18 +2337,18 @@ if mode == "新規登録":
                     location=event_location,
                     memo=memo_text,
                 )
-                    if ok:
-                        for key in ["ev_mb_composers", "ev_mb_works", "ev_mb_filter",
-                                    "ev_it_results", "ev_setlist_main", "ev_setlist_encore"]:
-                            st.session_state.pop(key, None)
-                        reset_new_register_state()
-                        sync_notion_after_update(
-                            page_id=st.session_state.get("last_created_page_id"),
-                            updated_page=st.session_state.get("last_created_page"),
-                        )
-                        show_post_register_ui()
-                    else:
-                        st.error("❌ 登録失敗")
+                if ok:
+                    for key in ["ev_mb_composers", "ev_mb_works", "ev_mb_filter",
+                                "ev_it_results", "ev_setlist_main", "ev_setlist_encore"]:
+                        st.session_state.pop(key, None)
+                    reset_new_register_state()
+                    sync_notion_after_update(
+                        page_id=st.session_state.get("last_created_page_id"),
+                        updated_page=st.session_state.get("last_created_page"),
+                    )
+                    show_post_register_ui()
+                else:
+                    st.error("❌ 登録失敗")
             st.stop()
 
         # ============================================================
