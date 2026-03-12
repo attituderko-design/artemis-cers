@@ -26,6 +26,9 @@ NOTION_HEADERS = {
     "Content-Type": "application/json",
 }
 
+DEFAULT_TIMEOUT = 20
+REFRESH_BATCH_SIZE = 20
+
 # ============================================================
 # 媒体マッピング
 # ============================================================
@@ -95,6 +98,65 @@ def get_drive_service_safe():
 def sanitize_filename(name: str) -> str:
     return re.sub(r'[\\/:*?"<>|]', "_", name)
 
+def make_noid_filename(title: str, page_id: str) -> str:
+    return f"{sanitize_filename(title)}_noid_{page_id}.jpg"
+
+def has_any_id(props) -> bool:
+    if props.get("TMDB_ID", {}).get("number"):
+        return True
+    if props.get("AniList_ID", {}).get("number"):
+        return True
+    if props.get("IGDB_ID", {}).get("number"):
+        return True
+    if props.get("iTunes_ID", {}).get("number"):
+        return True
+    isbn_val = "".join(t["plain_text"] for t in (props.get("ISBN") or {}).get("rich_text", []))
+    if isbn_val.strip():
+        return True
+    return False
+
+def fetch_image_bytes(cover_url: str) -> tuple[bytes | None, str | None]:
+    if not cover_url:
+        return None, None
+    img_url = cover_url
+    if "image.tmdb.org/t/p/" in cover_url and "w600_and_h900_bestv2" in cover_url:
+        img_url = cover_url.replace("w600_and_h900_bestv2", "original")
+    img_res = api_request("get", img_url)
+    if img_res is None or img_res.status_code != 200:
+        return None, None
+    mimetype = img_res.headers.get("Content-Type", "image/jpeg").split(";")[0]
+    if not mimetype.startswith("image/"):
+        mimetype = "image/jpeg"
+    return img_res.content, mimetype
+
+def save_bytes_to_drive(filename: str, image_bytes: bytes, mimetype: str) -> str | None:
+    service = get_drive_service_safe()
+    if service is None:
+        return None
+    files = get_drive_files()
+    media = MediaIoBaseUpload(io.BytesIO(image_bytes), mimetype=mimetype, resumable=False)
+    if filename in files:
+        file_id = files[filename]
+        service.files().update(fileId=file_id, media_body=media).execute()
+    else:
+        result = service.files().create(
+            body={"name": filename, "parents": [DRIVE_FOLDER_ID]},
+            media_body=media,
+            fields="id",
+        ).execute()
+        file_id = result["id"]
+        st.session_state.drive_files_cache[filename] = file_id
+    return file_id
+
+def save_cover_to_drive_noid(cover_url: str, title: str, page_id: str) -> str | None:
+    if not cover_url or cover_url.startswith("https://drive.google.com"):
+        return None
+    image_bytes, mimetype = fetch_image_bytes(cover_url)
+    if not image_bytes or not mimetype:
+        return None
+    filename = make_noid_filename(title, page_id)
+    return save_bytes_to_drive(filename, image_bytes, mimetype)
+
 def clearable_text_input(label: str, key: str, placeholder: str = "", value: str = "", container=None, **kwargs) -> str:
     """× ボタン付き text_input。セッションステートで値を管理する。"""
     ss_key = f"_cti_{key}"
@@ -138,6 +200,8 @@ def get_current_notion_url(item) -> str | None:
     cover = item.get("cover")
     if cover and cover.get("type") == "external":
         return cover.get("external", {}).get("url")
+    if cover and cover.get("type") == "file":
+        return cover.get("file", {}).get("url")
     return None
 
 def is_unreleased(page) -> bool:
@@ -180,18 +244,25 @@ def is_incomplete(page) -> bool:
 # ============================================================
 
 def get_drive_files() -> dict:
-    if "drive_files_cache" not in st.session_state:
+    if "drive_files_cache" not in st.session_state or not isinstance(st.session_state.drive_files_cache, dict):
         refresh_drive_files()
     return st.session_state.drive_files_cache
 
 def refresh_drive_files():
     service = get_drive_service_safe()
-    results = service.files().list(
-        q=f"'{DRIVE_FOLDER_ID}' in parents and trashed=false",
-        fields="files(id, name)",
-        pageSize=1000,
-    ).execute()
-    st.session_state.drive_files_cache = {f["name"]: f["id"] for f in results.get("files", [])}
+    if service is None:
+        st.session_state.drive_files_cache = {}
+        return
+    try:
+        results = service.files().list(
+            q=f"'{DRIVE_FOLDER_ID}' in parents and trashed=false",
+            fields="files(id, name)",
+            pageSize=1000,
+        ).execute()
+        st.session_state.drive_files_cache = {f["name"]: f["id"] for f in results.get("files", [])}
+    except Exception as e:
+        st.warning(f"Drive一覧取得失敗: {e}")
+        st.session_state.drive_files_cache = {}
 
 def drive_exists(title: str, tmdb_id) -> bool:
     return make_filename(title, tmdb_id) in get_drive_files()
@@ -204,28 +275,14 @@ def save_to_drive(cover_url: str, title: str, tmdb_id, image_bytes: bytes | None
     """Drive保存成功時はfile_idを返す、失敗時はNone"""
     try:
         if image_bytes is None:
-            img_url = cover_url.replace("w600_and_h900_bestv2", "original")
-            img_res = api_request("get", img_url)
-            if img_res is None or img_res.status_code != 200:
+            if not cover_url:
                 return None
-            image_bytes = img_res.content
-            mimetype    = "image/jpeg"
-        service = get_drive_service_safe()
-        fname   = make_filename(title, tmdb_id)
-        files   = get_drive_files()
-        media   = MediaIoBaseUpload(io.BytesIO(image_bytes), mimetype=mimetype, resumable=False)
-        if fname in files:
-            file_id = files[fname]
-            service.files().update(fileId=file_id, media_body=media).execute()
-        else:
-            result  = service.files().create(
-                body={"name": fname, "parents": [DRIVE_FOLDER_ID]},
-                media_body=media,
-                fields="id",
-            ).execute()
-            file_id = result["id"]
-            st.session_state.drive_files_cache[fname] = file_id
-        return file_id
+            image_bytes, fetched_mime = fetch_image_bytes(cover_url)
+            if image_bytes is None:
+                return None
+            mimetype = fetched_mime or "image/jpeg"
+        fname = make_filename(title, tmdb_id)
+        return save_bytes_to_drive(fname, image_bytes, mimetype)
     except Exception as e:
         st.warning(f"Drive保存失敗 ({title}): {e}")
         return None
@@ -239,6 +296,8 @@ def get_drive_public_url(title: str, tmdb_id) -> str | None:
             return None
         file_id = files[fname]
         service = get_drive_service_safe()
+        if service is None:
+            return None
         service.permissions().create(fileId=file_id, body={"role": "reader", "type": "anyone"}).execute()
         return f"https://drive.google.com/uc?id={file_id}"
     except Exception:
@@ -251,6 +310,8 @@ def delete_from_drive(title: str, tmdb_id) -> bool:
         if fname not in files:
             return True
         service = get_drive_service_safe()
+        if service is None:
+            return False
         service.files().delete(fileId=files[fname]).execute()
         del st.session_state.drive_files_cache[fname]
         return True
@@ -295,12 +356,22 @@ def diff_badge(item) -> str:
 # ============================================================
 
 def api_request(method: str, url: str, max_retries: int = 3, **kwargs):
-    fn = {"get": requests.get, "post": requests.post, "patch": requests.patch, "delete": requests.delete}[method]
+    method_l = method.lower()
+    fn = {"get": requests.get, "post": requests.post, "patch": requests.patch, "delete": requests.delete}.get(method_l)
+    if fn is None:
+        raise ValueError(f"Unsupported method: {method}")
+    if "timeout" not in kwargs:
+        kwargs["timeout"] = DEFAULT_TIMEOUT
     for attempt in range(max_retries):
         try:
             res = fn(url, **kwargs)
             if res.status_code == 429:
-                time.sleep(int(res.headers.get("Retry-After", 5)))
+                retry_after = res.headers.get("Retry-After", 5)
+                try:
+                    retry_after = int(retry_after)
+                except Exception:
+                    retry_after = 5
+                time.sleep(retry_after)
                 continue
             if res.status_code >= 500:
                 time.sleep(2 ** attempt)
@@ -322,7 +393,8 @@ def load_notion_data() -> list:
         if next_cursor:
             payload["start_cursor"] = next_cursor
         res = api_request("post", url, headers=NOTION_HEADERS, json=payload)
-        if res is None:
+        if res is None or res.status_code != 200:
+            st.warning(f"Notion取得失敗: {res.status_code if res else 'None'}")
             break
         data = res.json()
         all_results.extend(data.get("results", []))
@@ -531,6 +603,10 @@ def search_books(query: str, author: str = None, page: int = 1) -> list:
         authors = [clean_author(a) for a in raw_authors]
         isbn_val = item.get("isbn", "")
         cover = get_openlibrary_cover(isbn_val) or rakuten_cover
+        # --- 念押しで最終的なURLの末尾をカット ---
+        if cover:
+            cover = cover.split('?')[0]
+        # --------------------------------------
         results.append({
             "id":         isbn_val or item.get("title", ""),
             "isbn":        isbn_val,
@@ -1429,6 +1505,11 @@ for key, default in {
     "album_tracks_id":    None,
     "ev_setlist_main":    [],
     "ev_setlist_encore":  [],
+    "refresh_targets_ids": [],
+    "refresh_cursor":      0,
+    "refresh_success_log": [],
+    "refresh_maintain_log": [],
+    "refresh_error_log":   [],
 }.items():
     if key not in st.session_state:
         st.session_state[key] = default
@@ -1495,6 +1576,11 @@ with st.sidebar:
             if st.button("🔄 リフレッシュ", use_container_width=True):
                 st.session_state.is_running = True
                 st.session_state.sync_mode  = "refresh"
+                st.session_state.refresh_cursor = 0
+                st.session_state.refresh_targets_ids = []
+                st.session_state.refresh_success_log = []
+                st.session_state.refresh_maintain_log = []
+                st.session_state.refresh_error_log = []
                 st.rerun()
             st.caption("IDを基にすべてのフィールドを強制上書きします\nIDのないデータは情報の正規化のみ実施")
             if st.button("⏹ 停止", use_container_width=True):
@@ -2565,19 +2651,47 @@ if mode == "自動同期" and st.session_state.is_running:
             ]
         else:
             sync_targets = base_targets
+        if not st.session_state.refresh_targets_ids:
+            st.session_state.refresh_targets_ids = [p["id"] for p in sync_targets]
+        sync_target_ids = st.session_state.refresh_targets_ids
+        page_by_id = {p["id"]: p for p in sync_targets}
+        total_count = len(sync_target_ids)
+        start_index = st.session_state.refresh_cursor
+        end_index = min(start_index + REFRESH_BATCH_SIZE, total_count)
+        current_targets = sync_target_ids[start_index:end_index]
+        success_log = st.session_state.refresh_success_log
+        maintain_log = st.session_state.refresh_maintain_log
+        error_log = st.session_state.refresh_error_log
     else:
         sync_targets = get_display_pages()
-    label_mode   = "🔄 リフレッシュ" if is_refresh else "⚙️ 自動同期"
-
-    with st.status(f"{label_mode}中... 0 / {len(sync_targets)} 件", expanded=True) as status:
-        pbar, count = st.progress(0), 0
+        total_count = len(sync_targets)
+        start_index = 0
+        end_index = total_count
+        current_targets = sync_targets
         success_log: list[str] = []
         maintain_log: list[str] = []
         error_log:   list[str] = []
+    label_mode   = "🔄 リフレッシュ" if is_refresh else "⚙️ 自動同期"
 
-        for i, item in enumerate(sync_targets):
+    processed_start = start_index if is_refresh else 0
+    with st.status(f"{label_mode}中... {processed_start} / {total_count} 件", expanded=True) as status:
+        pbar, count = st.progress(0), processed_start
+
+        for i, item in enumerate(current_targets):
             if not st.session_state.is_running:
                 break
+            if is_refresh:
+                page_id = item
+                item = page_by_id.get(page_id)
+                if item is None:
+                    msg = f"⚠️ データ取得失敗: {page_id}"
+                    st.write(msg)
+                    error_log.append(msg)
+                    count += 1
+                    pbar.progress((count) / total_count if total_count else 1)
+                    status.update(label=f"{label_mode}中... {count} / {total_count} 件", state="running")
+                    time.sleep(0.05)
+                    continue
 
             props     = item["properties"]
             log_title, jp, en = get_title(props)
@@ -2586,6 +2700,21 @@ if mode == "自動同期" and st.session_state.is_running:
                 m["name"] in ["映画", "ドラマ"]
                 for m in props.get("媒体", {}).get("multi_select", [])
             )
+
+            if is_refresh and not has_any_id(props):
+                current_cover = get_current_notion_url(item)
+                if current_cover and not current_cover.startswith("https://drive.google.com"):
+                    noid_fname = make_noid_filename(log_title, item["id"])
+                    if noid_fname not in get_drive_files():
+                        file_id = save_cover_to_drive_noid(current_cover, log_title, item["id"])
+                        if file_id:
+                            msg = f"🧷 Driveバックアップ(no-id): {log_title}"
+                            st.write(msg)
+                            success_log.append(msg)
+                        else:
+                            msg = f"⚠️ Driveバックアップ失敗(no-id): {log_title}"
+                            st.write(msg)
+                            error_log.append(msg)
             if is_refresh and not is_movie_drama:
                 # 映画・ドラマ以外: アイコン更新 + 媒体別の追加処理
                 media_labels    = [m["name"] for m in props.get("媒体", {}).get("multi_select", [])]
@@ -2641,8 +2770,8 @@ if mode == "自動同期" and st.session_state.is_running:
                 st.write(msg)
                 success_log.append(msg)
                 count += 1
-                pbar.progress((i + 1) / len(sync_targets))
-                status.update(label=f"{label_mode}中... {i + 1} / {len(sync_targets)} 件", state="running")
+                pbar.progress((count) / total_count if total_count else 1)
+                status.update(label=f"{label_mode}中... {count} / {total_count} 件", state="running")
                 time.sleep(0.1)
                 continue
             need_notion = True if is_refresh else not notion_ok_now
@@ -2668,7 +2797,8 @@ if mode == "自動同期" and st.session_state.is_running:
                     msg = f"候補なし ({src}): {log_title}"
                     st.write(f"⚠️ {msg}")
                     error_log.append(msg)
-                    pbar.progress((i + 1) / len(sync_targets))
+                    count += 1
+                    pbar.progress((count) / total_count if total_count else 1)
                     time.sleep(0.1)
                     continue
 
@@ -2685,7 +2815,8 @@ if mode == "自動同期" and st.session_state.is_running:
                     msg = f"⏸️ 維持(OK): {log_title}"
                     st.write(msg)
                     maintain_log.append(log_title)
-                    pbar.progress((i + 1) / len(sync_targets))
+                    count += 1
+                    pbar.progress((count) / total_count if total_count else 1)
                     time.sleep(0.1)
                     continue
 
@@ -2705,7 +2836,7 @@ if mode == "自動同期" and st.session_state.is_running:
                     st.write(entry)
                     success_log.append(entry)
                     count += 1
-                    pbar.progress((i + 1) / len(sync_targets))
+                    pbar.progress((count) / total_count if total_count else 1)
                     time.sleep(0.1)
                     continue
 
@@ -2723,7 +2854,6 @@ if mode == "自動同期" and st.session_state.is_running:
                 if all_ok:
                     st.write(entry)
                     success_log.append(entry)
-                    count += 1
                 else:
                     fail_parts = []
                     if need_notion and not n_ok: fail_parts.append("Notion更新失敗")
@@ -2738,14 +2868,20 @@ if mode == "自動同期" and st.session_state.is_running:
                 st.write(msg)
                 error_log.append(msg)
 
-            pbar.progress((i + 1) / len(sync_targets))
-            status.update(label=f"{label_mode}中... {i + 1} / {len(sync_targets)} 件", state="running")
+            count += 1
+            pbar.progress((count) / total_count if total_count else 1)
+            status.update(label=f"{label_mode}中... {count} / {total_count} 件", state="running")
             time.sleep(0.1)
 
         status.update(
             label=f"{label_mode}完了！✅ {len(success_log)}件　⏸️ {len(maintain_log)}件　❌ {len(error_log)}件",
             state="complete"
         )
+        if is_refresh and end_index < total_count:
+            status.update(
+                label=f"{label_mode}続行中... {end_index} / {total_count} 件",
+                state="running"
+            )
 
     # 完了後にexpanderで仕分け表示
     if success_log:
@@ -2760,10 +2896,19 @@ if mode == "自動同期" and st.session_state.is_running:
         with st.expander(f"❌ 失敗・要確認 （{len(error_log)} 件）", expanded=True):
             for msg in error_log:
                 st.write(msg)
-    if not error_log:
+    if not error_log and (not is_refresh or end_index >= total_count):
         st.success("すべて正常に処理されました ✅")
 
-    st.session_state.is_running = False
+    if is_refresh:
+        if st.session_state.is_running:
+            st.session_state.refresh_cursor = end_index
+        if st.session_state.is_running and st.session_state.refresh_cursor < total_count:
+            st.rerun()
+        if st.session_state.refresh_cursor >= total_count:
+            st.session_state.is_running = False
+            st.session_state.refresh_targets_ids = []
+    else:
+        st.session_state.is_running = False
 
 # ============================================================
 # 手動確認モード
