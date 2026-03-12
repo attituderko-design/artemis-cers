@@ -1798,7 +1798,7 @@ st.markdown(
     "<em><strong>ArtéMis</strong></em> — named after the goddess of the hunt and the moon. She keeps track of everything you've ever experienced.",
     unsafe_allow_html=True
 )
-st.caption("v5.31")
+st.caption("v5.32")
 
 for key, default in {
     "is_running":         False,
