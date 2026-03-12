@@ -464,6 +464,7 @@ def search_tmdb_by_person(person_query: str, media_type: str = "multi") -> list:
             break
     return results
 
+
 def parse_rakuten_date(date_str: str) -> str:
     """楽天APIの日付文字列をISO形式に変換 例: '2004年01月' -> '2004-01-01'"""
     if not date_str:
@@ -473,31 +474,6 @@ def parse_rakuten_date(date_str: str) -> str:
         return f"{m.group(1)}-{m.group(2)}-01"
     return date_str[:10] if len(date_str) >= 10 else date_str
 
-#ChatGPT追加部#
-
-def get_google_books_cover(isbn: str) -> str:
-    if not isbn:
-        return ""
-    try:
-        url = f"https://books.google.com/books/content?vid=ISBN{isbn}&printsec=frontcover&img=1&zoom=2"
-        res = requests.get(url, timeout=6)
-
-        if res.status_code != 200:
-            return ""
-
-        # プレースホルダー画像判定
-        if len(res.content) < 5000:   # image-not-availableは非常に小さい
-            return ""
-
-        if res.headers.get("Content-Type","").startswith("image"):
-            return url
-
-    except Exception:
-        pass
-
-    return ""
-
-#ChatGPT追加部#
 
 def get_openlibrary_cover(isbn: str) -> str:
     """ISBNからOpen Libraryの高解像度カバー画像URLを返す。取得できなければ空文字。"""
@@ -549,13 +525,7 @@ def search_books(query: str, author: str = None, page: int = 1) -> list:
         raw_authors = [a.strip() for a in (item.get("author", "") or "").split("/") if a.strip()]
         authors = [clean_author(a) for a in raw_authors]
         isbn_val = item.get("isbn", "")
-         #ChatGPT変更部#
-        cover = (
-        get_google_books_cover(isbn_val)
-        or get_openlibrary_cover(isbn_val)
-        or rakuten_cover
-        )
-        #ChatGPT変更部#
+        cover = get_openlibrary_cover(isbn_val) or rakuten_cover
         results.append({
             "id":         isbn_val or item.get("title", ""),
             "isbn":       isbn_val,
@@ -1422,7 +1392,7 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 st.image("assets/logo.png", width=320)
-st.caption("v4.73")
+st.caption("v4.74")
 
 for key, default in {
     "is_running":         False,
@@ -1667,7 +1637,7 @@ if mode == "新規登録":
                                     watched_date=r["date"],
                                     rating=r["rating"],
                                     memo=r["memo"],
-                                    location=r["location"],
+                                    location=None,  # TODO: 文字列→lat/lon変換は未実装、インポート後にデータ管理で設定
                                 )
                                 if ok:
                                     success += 1
