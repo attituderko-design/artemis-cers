@@ -546,6 +546,142 @@ def parse_rakuten_date(date_str: str) -> str:
         return f"{m.group(1)}-{m.group(2)}-01"
     return date_str[:10] if len(date_str) >= 10 else date_str
 
+def normalize_isbn(isbn: str) -> str:
+    if not isbn:
+        return ""
+    s = re.sub(r'[^0-9Xx]', '', isbn).upper()
+    return s
+
+def isbn10_to13(isbn10: str) -> str:
+    if len(isbn10) != 10:
+        return ""
+    core = "978" + isbn10[:9]
+    total = 0
+    for i, ch in enumerate(core):
+        total += int(ch) * (1 if i % 2 == 0 else 3)
+    check = (10 - (total % 10)) % 10
+    return core + str(check)
+
+def expand_isbn_variants(isbn: str) -> list[str]:
+    s = normalize_isbn(isbn)
+    if len(s) == 10:
+        s13 = isbn10_to13(s)
+        return [s, s13] if s13 else [s]
+    if len(s) == 13:
+        return [s]
+    return []
+
+@st.cache_data(ttl=86400)
+def get_openlibrary_cover(isbn: str) -> str:
+    """ISBNからOpen Libraryの高解像度カバー画像URLを返す。取得できなければ空文字。"""
+    if not isbn:
+        return ""
+    for v in expand_isbn_variants(isbn):
+        try:
+            check_url = f"https://covers.openlibrary.org/b/isbn/{v}-L.jpg?default=false"
+            res = api_request("get", check_url)
+            if res and res.status_code == 200 and res.headers.get("Content-Type", "").startswith("image"):
+                return f"https://covers.openlibrary.org/b/isbn/{v}-L.jpg"
+        except Exception:
+            pass
+    return ""
+
+@st.cache_data(ttl=86400)
+def get_openlibrary_cover_by_search(title: str, author: str | None = None) -> str:
+    if not title:
+        return ""
+    try:
+        params = {"title": title, "limit": 5}
+        if author:
+            params["author"] = author
+        res = api_request("get", "https://openlibrary.org/search.json", params=params)
+        if not res or res.status_code != 200:
+            return ""
+        docs = res.json().get("docs", [])
+        for d in docs:
+            cover_id = d.get("cover_i")
+            if cover_id:
+                return f"https://covers.openlibrary.org/b/id/{cover_id}-L.jpg"
+    except Exception:
+        pass
+    return ""
+
+@st.cache_data(ttl=86400)
+def get_openbd_cover(isbn: str) -> str:
+    if not isbn:
+        return ""
+    try:
+        v = expand_isbn_variants(isbn)
+        if not v:
+            return ""
+        res = api_request("get", "https://api.openbd.jp/v1/get", params={"isbn": ",".join(v)})
+        if not res or res.status_code != 200:
+            return ""
+        data = res.json()
+        if not data:
+            return ""
+        for entry in data:
+            if not entry:
+                continue
+            summary = entry.get("summary", {})
+            cover = summary.get("cover") or ""
+            if cover:
+                return cover
+    except Exception:
+        pass
+    return ""
+
+def _try_import_pil():
+    try:
+        from PIL import Image  # type: ignore
+        return Image
+    except Exception:
+        return None
+
+@st.cache_data(ttl=86400)
+def probe_image(url: str) -> tuple[int, int, int]:
+    if not url:
+        return (0, 0, 0)
+    img_res = api_request("get", url)
+    if img_res is None or img_res.status_code != 200:
+        return (0, 0, 0)
+    content = img_res.content
+    size_bytes = len(content)
+    Image = _try_import_pil()
+    if Image is None:
+        return (0, 0, size_bytes)
+    try:
+        with Image.open(io.BytesIO(content)) as im:
+            w, h = im.size
+            return (w, h, size_bytes)
+    except Exception:
+        return (0, 0, size_bytes)
+
+def choose_best_cover(candidates: list[str]) -> str:
+    candidates = [c for c in dict.fromkeys(candidates) if c]
+    if not candidates:
+        return ""
+    best_url = candidates[0]
+    best_score = (0, 0, 0)
+    for url in candidates:
+        w, h, size_bytes = probe_image(url)
+        score = (w * h, max(w, h), size_bytes)
+        if score > best_score:
+            best_score = score
+            best_url = url
+    return best_url
+
+def collect_book_cover_candidates(isbn: str, title: str, author: str | None, rakuten_cover: str) -> list[str]:
+    candidates = []
+    if isbn:
+        candidates.append(get_openlibrary_cover(isbn))
+        candidates.append(get_openbd_cover(isbn))
+    if title:
+        candidates.append(get_openlibrary_cover_by_search(title, author))
+    if rakuten_cover:
+        candidates.append(rakuten_cover)
+    return [c for c in candidates if c]
+
 
 def get_openlibrary_cover(isbn: str) -> str:
     """ISBNからOpen Libraryの高解像度カバー画像URLを返す。取得できなければ空文字。"""
@@ -602,7 +738,8 @@ def search_books(query: str, author: str = None, page: int = 1) -> list:
         raw_authors = [a.strip() for a in (item.get("author", "") or "").split("/") if a.strip()]
         authors = [clean_author(a) for a in raw_authors]
         isbn_val = item.get("isbn", "")
-        cover = get_openlibrary_cover(isbn_val) or rakuten_cover
+        cover_candidates = collect_book_cover_candidates(isbn_val, item.get("title", ""), " / ".join(authors) if authors else None, rakuten_cover)
+        cover = choose_best_cover(cover_candidates) or ""
         # --- 念押しで最終的なURLの末尾をカット ---
         if cover:
             cover = cover.split('?')[0]
@@ -1014,7 +1151,8 @@ def search_manga(query: str, author: str = None, page: int = 1) -> list:
             continue
         seen.add(base_title)
         isbn_val = item.get("isbn", "")
-        cover = get_openlibrary_cover(isbn_val) or rakuten_cover
+        cover_candidates = collect_book_cover_candidates(isbn_val, base_title, " / ".join(authors) if authors else None, rakuten_cover)
+        cover = choose_best_cover(cover_candidates) or ""
         results.append({
             "id":         isbn_val or base_title,
             "isbn":       isbn_val,
