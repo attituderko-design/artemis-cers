@@ -480,11 +480,21 @@ def get_google_books_cover(isbn: str) -> str:
         return ""
     try:
         url = f"https://books.google.com/books/content?vid=ISBN{isbn}&printsec=frontcover&img=1&zoom=2"
-        res = requests.get(url, timeout=6, allow_redirects=True)
-        if res.status_code == 200 and res.headers.get("Content-Type", "").startswith("image"):
+        res = requests.get(url, timeout=6)
+
+        if res.status_code != 200:
+            return ""
+
+        # プレースホルダー画像判定
+        if len(res.content) < 5000:   # image-not-availableは非常に小さい
+            return ""
+
+        if res.headers.get("Content-Type","").startswith("image"):
             return url
+
     except Exception:
         pass
+
     return ""
 
 #ChatGPT追加部#
