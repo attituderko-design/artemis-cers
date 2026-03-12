@@ -75,21 +75,60 @@ def reset_new_register_state():
         "confirm_date", "confirm_rating", "confirm_wl",
         "ev_title", "ev_creator", "ev_cast", "ev_genre",
         "ev_start", "ev_end", "ev_watch", "ev_watch2", "ev_rating", "ev_wl",
+        "new_search_results", "new_search_done", "new_search_excluded",
+        "bulk_checked", "confirm_reg", "reg_cart",
+        "album_tracks_cache", "album_tracks_id",
     ]
     for k in keys:
         st.session_state.pop(k, None)
         st.session_state.pop(f"_cti_{k}", None)
 
-def maybe_reload_notion_data():
-    """更新後に自動でNotion再取得（オプション）"""
-    if not st.session_state.get("auto_reload_notion", False):
+def upsert_page_in_state(page: dict):
+    if not page or "id" not in page:
         return
-    with st.spinner("Notionデータ再取得中..."):
-        all_pages = load_notion_data()
-        st.session_state.all_pages    = all_pages
-        st.session_state.pages        = filter_target_pages(all_pages)
-        st.session_state.search_results = {}
-        st.session_state.manual_page  = 0
+    pid = page["id"]
+    for key in ["pages", "all_pages"]:
+        if key not in st.session_state:
+            continue
+        pages = st.session_state.get(key, [])
+        found = False
+        for i, p in enumerate(pages):
+            if p.get("id") == pid:
+                pages[i] = page
+                found = True
+                break
+        if not found:
+            pages.append(page)
+        st.session_state[key] = pages
+
+def sync_notion_after_update(page_id: str | None = None, updated_page: dict | None = None):
+    """更新後のデータ同期（手動/自動/半自動）"""
+    mode = st.session_state.get("auto_reload_mode", "manual")
+    if mode == "manual":
+        st.session_state.created_pages = []
+        return
+    if mode == "full":
+        with st.spinner("Notionデータ再取得中..."):
+            all_pages = load_notion_data()
+            if st.session_state.get("last_notion_load_ok", True):
+                st.session_state.all_pages      = all_pages
+                st.session_state.pages          = filter_target_pages(all_pages)
+                st.session_state.search_results = {}
+                st.session_state.manual_page    = 0
+            else:
+                st.warning("Notion再取得に失敗しました。手動で再試行してください。")
+        st.session_state.created_pages = []
+        return
+    # partial
+    if updated_page:
+        upsert_page_in_state(updated_page)
+        return
+    if page_id:
+        res = api_request("get", f"https://api.notion.com/v1/pages/{page_id}", headers=NOTION_HEADERS)
+        if res is not None and res.status_code == 200:
+            upsert_page_in_state(res.json())
+        else:
+            st.warning("該当ページの再取得に失敗しました。")
 
 # ============================================================
 # Google Drive API クライアント
@@ -417,6 +456,7 @@ def api_request(method: str, url: str, max_retries: int = 3, **kwargs):
 def load_notion_data() -> list:
     url = f"https://api.notion.com/v1/databases/{NOTION_DB_ID}/query"
     all_results, has_more, next_cursor = [], True, None
+    st.session_state.last_notion_load_ok = True
     while has_more:
         payload = {"page_size": 100}
         if next_cursor:
@@ -424,6 +464,7 @@ def load_notion_data() -> list:
         res = api_request("post", url, headers=NOTION_HEADERS, json=payload)
         if res is None or res.status_code != 200:
             st.warning(f"Notion取得失敗: {res.status_code if res else 'None'}")
+            st.session_state.last_notion_load_ok = False
             break
         data = res.json()
         all_results.extend(data.get("results", []))
@@ -1622,6 +1663,13 @@ def create_notion_page(jp_title: str, en_title: str, media_type_label: str,
         except Exception:
             st.error(f"Notion API エラー {res.status_code}: {res.text[:300]}")
         return False
+    try:
+        created = res.json()
+        st.session_state.last_created_page = created
+        st.session_state.last_created_page_id = created.get("id")
+        st.session_state.created_pages.append(created)
+    except Exception:
+        pass
     return True
 
 def is_japanese_name(name: str) -> bool:
@@ -1747,7 +1795,7 @@ st.markdown("""
 
 st.image("assets/logo.png", width=320)
 st.caption("ArtéMis — named after the goddess of the hunt and the moon. She keeps track of everything you've ever experienced.")
-st.caption("v5.00")
+st.caption("v5.10")
 
 for key, default in {
     "is_running":         False,
@@ -1784,7 +1832,8 @@ for key, default in {
     "refresh_success_log": [],
     "refresh_maintain_log": [],
     "refresh_error_log":   [],
-    "auto_reload_notion":  False,
+    "auto_reload_mode":    "manual",
+    "created_pages":       [],
 }.items():
     if key not in st.session_state:
         st.session_state[key] = default
@@ -1796,17 +1845,37 @@ with st.sidebar:
     st.header("操作パネル")
 
     st.divider()
-    st.checkbox("更新後にNotionを自動再取得", key="auto_reload_notion")
+    st.radio(
+        "更新後の同期方式",
+        options=["手動", "自動（全件）", "半自動（該当ページ）"],
+        index=["手動", "自動（全件）", "半自動（該当ページ）"].index(
+            "手動" if st.session_state.auto_reload_mode == "manual"
+            else "自動（全件）" if st.session_state.auto_reload_mode == "full"
+            else "半自動（該当ページ）"
+        ),
+        key="auto_reload_mode",
+    )
+    # normalize stored value to internal keys
+    if st.session_state.auto_reload_mode == "手動":
+        st.session_state.auto_reload_mode = "manual"
+    elif st.session_state.auto_reload_mode == "自動（全件）":
+        st.session_state.auto_reload_mode = "full"
+    elif st.session_state.auto_reload_mode == "半自動（該当ページ）":
+        st.session_state.auto_reload_mode = "partial"
     if st.button("📥 Notionデータ取得", use_container_width=True, key="load_notion", type="primary"):
         with st.spinner("Notionからデータ取得中..."):
             all_pages = load_notion_data()
-            st.session_state.all_pages      = all_pages
-            st.session_state.pages          = filter_target_pages(all_pages)
-            st.session_state.pages_loaded   = True
-            st.session_state.search_results = {}
-            st.session_state.manual_page    = 0
-            refresh_drive_files()
-        st.success(f"{len(st.session_state.pages)} 件取得しました（全媒体: {len(st.session_state.all_pages)} 件）")
+            if not st.session_state.get("last_notion_load_ok", True):
+                st.session_state.pages_loaded = False
+                st.error("Notion取得に失敗しました。接続設定やAPI制限をご確認ください。")
+            else:
+                st.session_state.all_pages      = all_pages
+                st.session_state.pages          = filter_target_pages(all_pages)
+                st.session_state.pages_loaded   = True
+                st.session_state.search_results = {}
+                st.session_state.manual_page    = 0
+                refresh_drive_files()
+                st.success(f"{len(st.session_state.pages)} 件取得しました（全媒体: {len(st.session_state.all_pages)} 件）")
 
     if not st.session_state.pages_loaded:
         st.caption("👆 まずデータを取得してください")
@@ -2015,13 +2084,12 @@ if mode == "新規登録":
                             import time as _time
                             _time.sleep(0.3)
                         st.success(f"✅ {success} 件登録完了" + (f"　❌ {fail} 件失敗" if fail else ""))
-                        if st.session_state.get("auto_reload_notion", False):
-                            maybe_reload_notion_data()
+                        if st.session_state.get("auto_reload_mode") == "partial":
+                            for p in st.session_state.get("created_pages", []):
+                                upsert_page_in_state(p)
+                            st.session_state.created_pages = []
                         else:
-                            # pages再取得（既存挙動）
-                            all_pages = load_notion_data()
-                            st.session_state.all_pages    = all_pages
-                            st.session_state.pages        = filter_target_pages(all_pages)
+                            sync_notion_after_update()
 
     # ============================================================
     # 通常登録タブ
@@ -2269,15 +2337,18 @@ if mode == "新規登録":
                     location=event_location,
                     memo=memo_text,
                 )
-                if ok:
-                    for key in ["ev_mb_composers", "ev_mb_works", "ev_mb_filter",
-                                "ev_it_results", "ev_setlist_main", "ev_setlist_encore"]:
-                        st.session_state.pop(key, None)
-                    reset_new_register_state()
-                    maybe_reload_notion_data()
-                    show_post_register_ui()
-                else:
-                    st.error("❌ 登録失敗")
+                    if ok:
+                        for key in ["ev_mb_composers", "ev_mb_works", "ev_mb_filter",
+                                    "ev_it_results", "ev_setlist_main", "ev_setlist_encore"]:
+                            st.session_state.pop(key, None)
+                        reset_new_register_state()
+                        sync_notion_after_update(
+                            page_id=st.session_state.get("last_created_page_id"),
+                            updated_page=st.session_state.get("last_created_page"),
+                        )
+                        show_post_register_ui()
+                    else:
+                        st.error("❌ 登録失敗")
             st.stop()
 
         # ============================================================
@@ -2589,7 +2660,10 @@ if mode == "新規登録":
                             for key in ["confirm_reg", "new_search_results", "new_search_done", "bulk_checked"]:
                                 st.session_state.pop(key, None)
                             reset_new_register_state()
-                            maybe_reload_notion_data()
+                            sync_notion_after_update(
+                                page_id=st.session_state.get("last_created_page_id"),
+                                updated_page=st.session_state.get("last_created_page"),
+                            )
                             show_post_register_ui()
                         else:
                             st.error("❌ 登録失敗")
@@ -2889,7 +2963,12 @@ if mode == "新規登録":
                         st.session_state.pop(key, None)
                     st.success(f"✅ {success_count} 件登録完了！")
                     reset_new_register_state()
-                    maybe_reload_notion_data()
+                    if st.session_state.get("auto_reload_mode") == "partial":
+                        for p in st.session_state.get("created_pages", []):
+                            upsert_page_in_state(p)
+                        st.session_state.created_pages = []
+                    else:
+                        sync_notion_after_update()
                     show_post_register_ui()
             with col_clear:
                 if st.button("🗑 登録リストをクリア", key="cart_clear"):
@@ -2976,6 +3055,14 @@ if mode == "自動同期" and st.session_state.is_running:
     with st.status(f"{label_mode}中... {processed_start} / {total_count} 件", expanded=True) as status:
         pbar, count = st.progress(0), processed_start
 
+        def add_error(item_id: str | None, title: str, reason: str, media_label: str | None):
+            error_log.append({
+                "id": item_id,
+                "title": title,
+                "reason": reason,
+                "media": media_label,
+            })
+
         for i, item in enumerate(current_targets):
             if not st.session_state.is_running:
                 break
@@ -2985,7 +3072,7 @@ if mode == "自動同期" and st.session_state.is_running:
                 if item is None:
                     msg = f"⚠️ データ取得失敗: {page_id}"
                     st.write(msg)
-                    error_log.append(msg)
+                    add_error(page_id, page_id, msg, None)
                     count += 1
                     pbar.progress((count) / total_count if total_count else 1)
                     status.update(label=f"{label_mode}中... {count} / {total_count} 件", state="running")
@@ -3054,7 +3141,7 @@ if mode == "自動同期" and st.session_state.is_running:
                     if need_drive  and not d_ok: fail_parts.append("Drive保存失敗")
                     msg = f"❌ {log_title}（{' / '.join(fail_parts)}）"
                     st.write(msg)
-                    error_log.append(msg)
+                    add_error(item["id"], log_title, msg, media_label_val)
                 count += 1
                 pbar.progress((count) / total_count if total_count else 1)
                 status.update(label=f"{label_mode}中... {count} / {total_count} 件", state="running")
@@ -3156,7 +3243,7 @@ if mode == "自動同期" and st.session_state.is_running:
                 if not top:
                     msg = f"候補なし ({src}): {log_title}"
                     st.write(f"⚠️ {msg}")
-                    error_log.append(msg)
+                    add_error(item["id"], log_title, msg, media_label_val)
                     count += 1
                     pbar.progress((count) / total_count if total_count else 1)
                     time.sleep(0.1)
@@ -3221,12 +3308,12 @@ if mode == "自動同期" and st.session_state.is_running:
                     if not meta_ok:              fail_parts.append("メタデータ失敗")
                     msg = f"❌ {log_title}（{' / '.join(fail_parts)}）"
                     st.write(msg)
-                    error_log.append(msg)
+                    add_error(item["id"], log_title, msg, media_label_val)
 
             except Exception as e:
                 msg = f"⚠️ エラー: {log_title}（{e}）"
                 st.write(msg)
-                error_log.append(msg)
+                add_error(item["id"], log_title, msg, media_label_val)
 
             count += 1
             pbar.progress((count) / total_count if total_count else 1)
@@ -3254,8 +3341,144 @@ if mode == "自動同期" and st.session_state.is_running:
                 st.write(msg)
     if error_log:
         with st.expander(f"❌ 失敗・要確認 （{len(error_log)} 件）", expanded=True):
-            for msg in error_log:
-                st.write(msg)
+            for entry in error_log:
+                if isinstance(entry, str):
+                    st.write(entry)
+                    continue
+                page_id = entry.get("id")
+                title = entry.get("title", "")
+                reason = entry.get("reason", "")
+                media_label = entry.get("media")
+                with st.expander(f"{title}"):
+                    st.caption(reason)
+                    if not page_id:
+                        st.warning("ページIDが取得できないため、個別編集できません。")
+                        continue
+                    page = next((p for p in st.session_state.pages if p["id"] == page_id), None)
+                    if page is None:
+                        st.warning("ページが見つかりません。Notionを再取得してください。")
+                        continue
+
+                    props = page["properties"]
+                    if media_label in ("映画", "ドラマ"):
+                        st.caption("🔧 TMDB_ID/種類を調整して再実行")
+                        id_col, type_col, run_col = st.columns([2, 2, 1])
+                        current_tmdb = (props.get("TMDB_ID") or {}).get("number") or 0
+                        tried_both = False
+                        new_tmdb_id = id_col.number_input(
+                            "TMDB_ID",
+                            value=int(current_tmdb) if current_tmdb else 0,
+                            min_value=0,
+                            step=1,
+                            key=f"err_tmdb_id_{page_id}",
+                        )
+                        new_media_type = type_col.selectbox(
+                            "種別",
+                            options=["movie", "tv"],
+                            index=0 if media_label == "映画" else 1,
+                            key=f"err_tmdb_type_{page_id}",
+                        )
+                        if run_col.button("自動判定", key=f"err_autofix_{page_id}"):
+                            if new_tmdb_id > 0:
+                                with st.spinner("自動判定中..."):
+                                    results = []
+                                    for mt in ["movie", "tv"]:
+                                        top = fetch_tmdb_by_id(int(new_tmdb_id), mt)
+                                        if not top:
+                                            results.append((mt, False, "not_found"))
+                                            continue
+                                        cover_url    = f"https://image.tmdb.org/t/p/w600_and_h900_bestv2{top['poster_path']}"
+                                        tmdb_release = top.get("release_date") or top.get("first_air_date")
+                                        date_prop        = props.get("リリース日", {}).get("date")
+                                        existing_release = date_prop.get("start") if date_prop else None
+                                        season_number    = get_season_number(props)
+                                        save_tmdb_id_to_notion(page_id, int(new_tmdb_id), mt)
+                                        n_ok, d_ok, meta_ok, updated = update_all(
+                                            page_id, cover_url, tmdb_release, existing_release,
+                                            title, int(new_tmdb_id), mt, True, True,
+                                            force_meta=True, props=props, season_number=season_number,
+                                        )
+                                        results.append((mt, n_ok and d_ok and meta_ok, "ok" if n_ok and d_ok and meta_ok else "failed"))
+                                        if n_ok and d_ok and meta_ok:
+                                            st.success(f"✅ 自動判定: {mt} で成功しました")
+                                            sync_notion_after_update(page_id=page_id)
+                                            st.rerun()
+                                    st.error("❌ 自動判定で成功しませんでした（movie/tv 両方）")
+                            else:
+                                st.warning("TMDB_IDを入力してください")
+                        if run_col.button("再実行", key=f"err_retry_{page_id}"):
+                            if new_tmdb_id > 0:
+                                with st.spinner("再実行中..."):
+                                    top = fetch_tmdb_by_id(int(new_tmdb_id), new_media_type)
+                                    if top:
+                                        cover_url    = f"https://image.tmdb.org/t/p/w600_and_h900_bestv2{top['poster_path']}"
+                                        tmdb_release = top.get("release_date") or top.get("first_air_date")
+                                        date_prop        = props.get("リリース日", {}).get("date")
+                                        existing_release = date_prop.get("start") if date_prop else None
+                                        season_number    = get_season_number(props)
+                                        save_tmdb_id_to_notion(page_id, int(new_tmdb_id), new_media_type)
+                                        n_ok, d_ok, meta_ok, updated = update_all(
+                                            page_id, cover_url, tmdb_release, existing_release,
+                                            title, int(new_tmdb_id), new_media_type, True, True,
+                                            force_meta=True, props=props, season_number=season_number,
+                                        )
+                                        if n_ok and d_ok and meta_ok:
+                                            st.success("✅ 再実行に成功しました")
+                                            sync_notion_after_update(page_id=page_id)
+                                            st.rerun()
+                                        else:
+                                            st.error("❌ 再実行に失敗しました")
+                                    else:
+                                        st.error("TMDBでIDが見つかりませんでした")
+                            else:
+                                st.warning("TMDB_IDを入力してください")
+                    elif media_label == "アニメ":
+                        st.caption("🔧 AniList_IDを調整して再実行")
+                        id_col, run_col = st.columns([3, 1])
+                        current_anilist = (props.get("AniList_ID") or {}).get("number") or 0
+                        new_anilist_id = id_col.number_input(
+                            "AniList_ID",
+                            value=int(current_anilist) if current_anilist else 0,
+                            min_value=0,
+                            step=1,
+                            key=f"err_anilist_id_{page_id}",
+                        )
+                        if run_col.button("再実行", key=f"err_retry_anilist_{page_id}"):
+                            if new_anilist_id > 0:
+                                with st.spinner("再実行中..."):
+                                    anime = fetch_anime_by_id(int(new_anilist_id))
+                                    if anime:
+                                        res = api_request(
+                                            "patch",
+                                            f"https://api.notion.com/v1/pages/{page_id}",
+                                            headers=NOTION_HEADERS,
+                                            json={"properties": {"AniList_ID": {"number": int(new_anilist_id)}}},
+                                        )
+                                        n_ok = res is not None and res.status_code == 200
+                                        meta_ok, _ = update_notion_metadata(
+                                            page_id,
+                                            {
+                                                "genres": anime.get("genres", []),
+                                                "cast": "",
+                                                "director": anime.get("director", ""),
+                                                "score": anime.get("score"),
+                                            },
+                                            force=True,
+                                            props=props,
+                                        )
+                                        c_ok = update_notion_cover(page_id, anime.get("cover_url", ""), None, None, is_refresh=False)
+                                        if n_ok and meta_ok and c_ok:
+                                            st.success("✅ 再実行に成功しました")
+                                            sync_notion_after_update(page_id=page_id)
+                                            st.rerun()
+                                        else:
+                                            st.error("❌ 再実行に失敗しました")
+                                    else:
+                                        st.error("AniListでIDが見つかりませんでした")
+                            else:
+                                st.warning("AniList_IDを入力してください")
+                    else:
+                        st.info("この媒体は個別再実行の対象外です。")
     if not error_log and (not is_refresh or end_index >= total_count):
         st.success("すべて正常に処理されました ✅")
 
@@ -3370,9 +3593,9 @@ if mode == "データ管理":
                     if page_media == "アニメ":
                         if anilist_id_val: st.caption(f"🆔 AniList_ID: {anilist_id_val}")
 
-            # ── 基本情報編集 ──
+            # ── 基本 ──
             st.divider()
-            st.caption("✏️ 基本情報を編集")
+            st.caption("✏️ 基本")
             existing_rating = (props.get("評価") or {}).get("select") or {}
             existing_rating = existing_rating.get("name", "") if isinstance(existing_rating, dict) else ""
             existing_memo   = "".join(t["plain_text"] for t in (props.get("メモ") or {}).get("rich_text", []))
@@ -3397,7 +3620,7 @@ if mode == "データ管理":
             existing_release_edit = ((props.get("リリース日") or {}).get("date") or {}).get("start", "") or ""
             new_release = st.text_input("📅 リリース日", value=existing_release_edit, placeholder="YYYY-MM-DD", key=f"edit_release_{page_id}")
 
-            if edit_col1.button("💾 保存", key=f"save_basic_{page_id}"):
+            if edit_col1.button("💾 基本を保存", key=f"save_basic_{page_id}"):
                 patch_props = {}
                 if new_rating != existing_rating:
                     patch_props["評価"] = {"select": {"name": new_rating} if new_rating else None}
@@ -3420,7 +3643,60 @@ if mode == "データ管理":
                             if p["id"] == page_id:
                                 for k, v in patch_props.items():
                                     p["properties"][k] = v
-                        maybe_reload_notion_data()
+                        sync_notion_after_update(page_id=page_id)
+                    else:
+                        st.error("❌ 更新失敗")
+                else:
+                    st.info("変更なし")
+
+            # ── メタ / ID ──
+            st.divider()
+            st.caption("🧩 メタ / ID")
+            existing_genres = " / ".join(g["name"] for g in (props.get("ジャンル") or {}).get("multi_select", []))
+            existing_creator = "".join(t["plain_text"] for t in (props.get("クリエイター") or {}).get("rich_text", []))
+            existing_cast = "".join(t["plain_text"] for t in (props.get("キャスト・関係者") or {}).get("rich_text", []))
+            meta_c1, meta_c2 = st.columns(2)
+            new_genres = meta_c1.text_input("ジャンル（区切り: / または , ）", value=existing_genres, key=f"edit_genres_{page_id}")
+            new_creator = meta_c2.text_input("クリエイター", value=existing_creator, key=f"edit_creator_{page_id}")
+            new_cast = st.text_input("キャスト・関係者", value=existing_cast, key=f"edit_cast_{page_id}")
+
+            id_c1, id_c2, id_c3, id_c4 = st.columns(4)
+            current_isbn = "".join(t["plain_text"] for t in (props.get("ISBN") or {}).get("rich_text", []))
+            new_isbn = id_c1.text_input("ISBN", value=current_isbn, key=f"edit_isbn_{page_id}")
+            current_anilist = (props.get("AniList_ID") or {}).get("number") or 0
+            new_anilist = id_c2.number_input("AniList_ID", value=int(current_anilist) if current_anilist else 0, min_value=0, step=1, key=f"edit_anilist_{page_id}")
+            current_igdb = (props.get("IGDB_ID") or {}).get("number") or 0
+            new_igdb = id_c3.number_input("IGDB_ID", value=int(current_igdb) if current_igdb else 0, min_value=0, step=1, key=f"edit_igdb_{page_id}")
+            current_itunes = (props.get("iTunes_ID") or {}).get("number") or 0
+            new_itunes = id_c4.number_input("iTunes_ID", value=int(current_itunes) if current_itunes else 0, min_value=0, step=1, key=f"edit_itunes_{page_id}")
+
+            if st.button("💾 メタ/IDを保存", key=f"save_meta_{page_id}"):
+                patch_props = {}
+                if new_genres != existing_genres:
+                    genres_list = [g.strip() for g in re.split(r'[/,、]', new_genres) if g.strip()]
+                    patch_props["ジャンル"] = {"multi_select": [{"name": g} for g in genres_list]}
+                if new_creator != existing_creator:
+                    patch_props["クリエイター"] = {"rich_text": [{"type": "text", "text": {"content": new_creator}}]}
+                if new_cast != existing_cast:
+                    patch_props["キャスト・関係者"] = {"rich_text": [{"type": "text", "text": {"content": new_cast}}]}
+                if new_isbn != current_isbn:
+                    patch_props["ISBN"] = {"rich_text": [{"type": "text", "text": {"content": new_isbn}}]} if new_isbn else {"rich_text": []}
+                if new_anilist != current_anilist:
+                    patch_props["AniList_ID"] = {"number": int(new_anilist)} if new_anilist else {"number": None}
+                if new_igdb != current_igdb:
+                    patch_props["IGDB_ID"] = {"number": int(new_igdb)} if new_igdb else {"number": None}
+                if new_itunes != current_itunes:
+                    patch_props["iTunes_ID"] = {"number": int(new_itunes)} if new_itunes else {"number": None}
+                if patch_props:
+                    res = api_request("patch", f"https://api.notion.com/v1/pages/{page_id}",
+                                      headers=NOTION_HEADERS, json={"properties": patch_props})
+                    if res and res.status_code == 200:
+                        st.success("✅ 更新しました")
+                        for p in st.session_state.pages:
+                            if p["id"] == page_id:
+                                for k, v in patch_props.items():
+                                    p["properties"][k] = v
+                        sync_notion_after_update(page_id=page_id)
                     else:
                         st.error("❌ 更新失敗")
                 else:
@@ -3444,14 +3720,64 @@ if mode == "データ管理":
                                       json={"properties": {"メモ": {"rich_text": [{"type": "text", "text": {"content": new_setlist}}]}}})
                     if res and res.status_code == 200:
                         st.success("✅ セットリスト保存完了")
-                        maybe_reload_notion_data()
+                        sync_notion_after_update(page_id=page_id)
                     else:
                         st.error("❌ 保存失敗")
 
             # ── ロケーション編集 ──
             st.divider()
             st.caption("📍 ロケーション")
-            location_search_ui(f"mgmt_{page_id}", page_media)
+            place_prop = (props.get("ロケーション") or {}).get("place") or {}
+            if place_prop:
+                place_label = place_prop.get("name") or place_prop.get("address") or "設定済み"
+                st.caption(f"現在: {place_label}")
+            else:
+                st.caption("現在: 未設定")
+
+            new_location = location_search_ui(f"mgmt_{page_id}", page_media)
+            loc_c1, loc_c2 = st.columns([1, 1])
+            with loc_c1:
+                if st.button("💾 ロケーションを保存", key=f"save_loc_{page_id}"):
+                    if new_location and new_location.get("lat") and new_location.get("lon"):
+                        place_payload = {
+                            "lat":  new_location["lat"],
+                            "lon":  new_location["lon"],
+                            "name": new_location.get("name", ""),
+                        }
+                        if new_location.get("address"):
+                            place_payload["address"] = new_location["address"]
+                        res = api_request(
+                            "patch",
+                            f"https://api.notion.com/v1/pages/{page_id}",
+                            headers=NOTION_HEADERS,
+                            json={"properties": {"ロケーション": {"place": place_payload}}},
+                        )
+                        if res and res.status_code == 200:
+                            st.success("✅ ロケーションを更新しました")
+                            for p in st.session_state.pages:
+                                if p["id"] == page_id:
+                                    p["properties"]["ロケーション"] = {"place": place_payload}
+                            sync_notion_after_update(page_id=page_id)
+                        else:
+                            st.error("❌ ロケーション更新失敗")
+                    else:
+                        st.warning("ロケーションを選択してください")
+            with loc_c2:
+                if st.button("🗑 ロケーションをクリア", key=f"clear_loc_{page_id}"):
+                    res = api_request(
+                        "patch",
+                        f"https://api.notion.com/v1/pages/{page_id}",
+                        headers=NOTION_HEADERS,
+                        json={"properties": {"ロケーション": {"place": None}}},
+                    )
+                    if res and res.status_code == 200:
+                        st.success("✅ ロケーションをクリアしました")
+                        for p in st.session_state.pages:
+                            if p["id"] == page_id:
+                                p["properties"]["ロケーション"] = {"place": None}
+                        sync_notion_after_update(page_id=page_id)
+                    else:
+                        st.error("❌ ロケーション更新失敗")
 
             # ── カバー画像アップロード ──
             st.divider()
@@ -3475,7 +3801,7 @@ if mode == "データ管理":
                                 svc = get_drive_service_safe()
                                 svc.permissions().create(fileId=file_id, body={"role": "reader", "type": "anyone"}).execute()
                             except Exception:
-                                pass
+                                st.warning("Driveの公開設定に失敗しました。")
                             # Notionカバー更新
                             res = api_request("patch", f"https://api.notion.com/v1/pages/{page_id}",
                                               headers=NOTION_HEADERS,
@@ -3485,7 +3811,7 @@ if mode == "データ管理":
                                 for p in st.session_state.pages:
                                     if p["id"] == page_id:
                                         p["cover"] = {"type": "external", "external": {"url": public_url}}
-                                maybe_reload_notion_data()
+                                sync_notion_after_update(page_id=page_id)
                                 st.rerun()
                             else:
                                 st.error("❌ Notion更新失敗")
@@ -3534,7 +3860,7 @@ if mode == "データ管理":
                                             if p["id"] == page_id:
                                                 p["cover"]                    = {"type": "external", "external": {"url": cover_url}}
                                                 p["properties"]["TMDB_ID"]    = {"number": new_tmdb_id}
-                                        maybe_reload_notion_data()
+                                        sync_notion_after_update(page_id=page_id)
                                         time.sleep(1.5)
                                         st.rerun()
                                     else:
@@ -3684,7 +4010,7 @@ if mode == "データ管理":
                                                 p["properties"]["AniList_ID"] = {"number": int(new_anilist_id)}
                                                 if cover_url:
                                                     p["cover"] = {"type": "external", "external": {"url": cover_url}}
-                                        maybe_reload_notion_data()
+                                        sync_notion_after_update(page_id=page_id)
                                         st.rerun()
                                     else:
                                         st.error("❌ 一部更新に失敗しました")
@@ -3760,7 +4086,7 @@ if mode == "データ管理":
                                                             p["properties"]["AniList_ID"] = {"number": int(anime_id)}
                                                             if cand.get("cover_url"):
                                                                 p["cover"] = {"type": "external", "external": {"url": cand.get("cover_url")}}
-                                                    maybe_reload_notion_data()
+                                                    sync_notion_after_update(page_id=page_id)
                                                     st.rerun()
                                                 else:
                                                     st.error("❌ 一部更新に失敗しました")
