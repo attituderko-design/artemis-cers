@@ -1798,7 +1798,7 @@ st.markdown(
     "<em><strong>ArtéMis</strong></em> — named after the goddess of the hunt and the moon. She keeps track of everything you've ever experienced.",
     unsafe_allow_html=True
 )
-st.caption("v5.20")
+st.caption("v5.30")
 
 for key, default in {
     "is_running":         False,
@@ -3759,6 +3759,26 @@ if mode == "データ管理":
             new_creator = meta_c2.text_input("クリエイター", value=existing_creator, key=f"edit_creator_{page_id}")
             new_cast = st.text_input("キャスト・関係者", value=existing_cast, key=f"edit_cast_{page_id}")
 
+            media_c1, media_c2 = st.columns([1.2, 2.8])
+            with media_c1:
+                new_media = st.selectbox(
+                    "媒体",
+                    options=list(MEDIA_ICON_MAP.keys()),
+                    index=list(MEDIA_ICON_MAP.keys()).index(page_media) if page_media in MEDIA_ICON_MAP else 0,
+                    key=f"edit_media_{page_id}",
+                )
+            tmdb_input = None
+            with media_c2:
+                if new_media in ("映画", "ドラマ"):
+                    current_tmdb = (props.get("TMDB_ID") or {}).get("number") or 0
+                    tmdb_input = st.number_input(
+                        "TMDB_ID",
+                        value=int(current_tmdb) if current_tmdb else 0,
+                        min_value=0,
+                        step=1,
+                        key=f"edit_tmdb_{page_id}",
+                    )
+
             id_c1, id_c2, id_c3, id_c4 = st.columns(4)
             current_isbn = "".join(t["plain_text"] for t in (props.get("ISBN") or {}).get("rich_text", []))
             new_isbn = id_c1.text_input("ISBN", value=current_isbn, key=f"edit_isbn_{page_id}")
@@ -3771,6 +3791,12 @@ if mode == "データ管理":
 
             if st.button("💾 メタ/IDを保存", key=f"save_meta_{page_id}"):
                 patch_props = {}
+                patch_icon = None
+                if new_media != page_media:
+                    patch_props["媒体"] = {"multi_select": [{"name": new_media}]}
+                    icon_url = get_media_icon_url(new_media)
+                    if icon_url:
+                        patch_icon = {"type": "external", "external": {"url": icon_url}}
                 if new_genres != existing_genres:
                     genres_list = [g.strip() for g in re.split(r'[/,、]', new_genres) if g.strip()]
                     patch_props["ジャンル"] = {"multi_select": [{"name": g} for g in genres_list]}
@@ -3778,6 +3804,9 @@ if mode == "データ管理":
                     patch_props["クリエイター"] = {"rich_text": [{"type": "text", "text": {"content": new_creator}}]}
                 if new_cast != existing_cast:
                     patch_props["キャスト・関係者"] = {"rich_text": [{"type": "text", "text": {"content": new_cast}}]}
+                if tmdb_input is not None:
+                    if tmdb_input != ((props.get("TMDB_ID") or {}).get("number") or 0):
+                        patch_props["TMDB_ID"] = {"number": int(tmdb_input)} if tmdb_input else {"number": None}
                 if new_isbn != current_isbn:
                     patch_props["ISBN"] = {"rich_text": [{"type": "text", "text": {"content": new_isbn}}]} if new_isbn else {"rich_text": []}
                 if new_anilist != current_anilist:
@@ -3787,14 +3816,24 @@ if mode == "データ管理":
                 if new_itunes != current_itunes:
                     patch_props["iTunes_ID"] = {"number": int(new_itunes)} if new_itunes else {"number": None}
                 if patch_props:
+                    payload = {"properties": patch_props}
+                    if patch_icon:
+                        payload["icon"] = patch_icon
                     res = api_request("patch", f"https://api.notion.com/v1/pages/{page_id}",
-                                      headers=NOTION_HEADERS, json={"properties": patch_props})
+                                      headers=NOTION_HEADERS, json=payload)
                     if res and res.status_code == 200:
                         st.success("✅ 更新しました")
                         for p in st.session_state.pages:
                             if p["id"] == page_id:
                                 for k, v in patch_props.items():
                                     p["properties"][k] = v
+                                if patch_icon:
+                                    p["icon"] = patch_icon
+                                if "TMDB_ID" in patch_props:
+                                    if tmdb_input:
+                                        st.session_state.tmdb_id_cache[page_id] = int(tmdb_input)
+                                    else:
+                                        st.session_state.tmdb_id_cache.pop(page_id, None)
                         sync_notion_after_update(page_id=page_id)
                     else:
                         st.error("❌ 更新失敗")
@@ -3916,58 +3955,6 @@ if mode == "データ管理":
                                 st.error("❌ Notion更新失敗")
                         else:
                             st.error("❌ Drive保存失敗")
-
-            # ── TMDB_ID修正（映画・ドラマのみ） ──
-            if is_tmdb_media:
-                st.divider()
-                st.caption("🔧 TMDB_ID を手動で修正")
-                id_col, save_col = st.columns([3, 1])
-                new_tmdb_id = id_col.number_input(
-                    "TMDB_ID",
-                    value=int(saved_tmdb_id) if saved_tmdb_id else 0,
-                    min_value=0,
-                    step=1,
-                    key=f"tmdb_id_input_{page_id}",
-                )
-                new_media_type = "movie" if page_media == "映画" else "tv"
-                with save_col:
-                    st.write("")
-                    st.write("")
-                    if st.button("💾 保存", key=f"save_id_{page_id}"):
-                        if new_tmdb_id > 0:
-                            with st.spinner("更新中..."):
-                                top = fetch_tmdb_by_id(new_tmdb_id, new_media_type)
-                                if top:
-                                    cover_url        = f"https://image.tmdb.org/t/p/w600_and_h900_bestv2{top['poster_path']}"
-                                    tmdb_release     = top.get("release_date") or top.get("first_air_date")
-                                    date_prop        = props.get("リリース日", {}).get("date")
-                                    existing_release = date_prop.get("start") if date_prop else None
-                                    season_number    = get_season_number(props)
-                                    st.session_state.tmdb_id_cache[page_id] = new_tmdb_id
-                                    n_ok, d_ok, meta_ok, updated = update_all(
-                                        page_id, cover_url, tmdb_release, existing_release,
-                                        log_title, new_tmdb_id, new_media_type, True, True,
-                                        force_meta=True, props=props, season_number=season_number,
-                                    )
-                                    parts = []
-                                    parts.append("Notion " + ("✅" if n_ok else "❌"))
-                                    parts.append("Drive "  + ("✅" if d_ok else "❌"))
-                                    if updated: parts.append("メタデータ[" + " / ".join(updated) + "] " + ("✅" if meta_ok else "❌"))
-                                    if n_ok and d_ok:
-                                        st.success("保存完了！ " + "　".join(parts))
-                                        for p in st.session_state.pages:
-                                            if p["id"] == page_id:
-                                                p["cover"]                    = {"type": "external", "external": {"url": cover_url}}
-                                                p["properties"]["TMDB_ID"]    = {"number": new_tmdb_id}
-                                        sync_notion_after_update(page_id=page_id)
-                                        time.sleep(1.5)
-                                        st.rerun()
-                                    else:
-                                        st.error("一部失敗: " + "　".join(parts))
-                                else:
-                                    st.error("TMDBでIDが見つかりませんでした")
-                        else:
-                            st.warning("TMDB_IDを入力してください")
 
             # TMDB検索UI（映画・ドラマのみ）
             if is_tmdb_media:
