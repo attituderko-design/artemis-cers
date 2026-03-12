@@ -410,6 +410,38 @@ def get_page_media(page) -> str | None:
     ms = page["properties"].get("媒体", {}).get("multi_select", [])
     return ms[0]["name"] if ms else None
 
+def get_current_media_type(props) -> str:
+    mt = props.get("MEDIA_TYPE", {}).get("multi_select", [])
+    return mt[0]["name"] if mt else ""
+
+def media_label_to_media_type(label: str) -> str:
+    return {
+        "書籍": "book",
+        "漫画": "manga",
+        "音楽アルバム": "album",
+        "ゲーム": "game",
+        "アニメ": "anime",
+        "演奏曲": "score",
+        "演奏会（鑑賞）": "event",
+        "演奏会（出演）": "event",
+        "展示会": "event",
+        "ライブ/ショー": "event",
+    }.get(label, "")
+
+def ensure_media_type_property(page_id: str, target_media_type: str, props: dict | None = None) -> bool:
+    if not target_media_type:
+        return True
+    current = get_current_media_type(props or {})
+    if current == target_media_type:
+        return True
+    res = api_request(
+        "patch",
+        f"https://api.notion.com/v1/pages/{page_id}",
+        headers=NOTION_HEADERS,
+        json={"properties": {"MEDIA_TYPE": {"multi_select": [{"name": target_media_type}]}}},
+    )
+    return res is not None and res.status_code == 200
+
 def filter_target_pages(all_pages: list) -> list:
     """データ管理・自動同期対象：全媒体"""
     return list(all_pages)
@@ -981,6 +1013,45 @@ def search_games(query: str) -> list:
         })
     return results
 
+def fetch_game_by_id(game_id: int) -> dict | None:
+    token = get_igdb_token()
+    if not token:
+        return None
+    headers = {
+        "Client-ID":     IGDB_CLIENT_ID,
+        "Authorization": f"Bearer {token}",
+    }
+    body = f'fields name,cover.url,first_release_date,genres.name,involved_companies.company.name,involved_companies.developer,involved_companies.publisher,summary; where id = {int(game_id)};'
+    res = requests.post("https://api.igdb.com/v4/games", headers=headers, data=body)
+    if res.status_code != 200:
+        return None
+    items = res.json()
+    if not items:
+        return None
+    item = items[0]
+    cover_url = ""
+    if item.get("cover", {}).get("url"):
+        cover_url = "https:" + item["cover"]["url"].replace("t_thumb", "t_cover_big")
+    release_year = ""
+    if item.get("first_release_date"):
+        release_year = datetime.utcfromtimestamp(item["first_release_date"]).strftime("%Y-%m-%d")
+    genres = [g["name"] for g in item.get("genres", [])]
+    developer, publisher = "", ""
+    for c in item.get("involved_companies", []):
+        name = c.get("company", {}).get("name", "")
+        if c.get("developer"):   developer = name
+        if c.get("publisher"):   publisher = name
+    return {
+        "id":          item["id"],
+        "title":       item.get("name", ""),
+        "cover_url":   cover_url,
+        "release":     release_year,
+        "genres":      genres,
+        "developer":   developer,
+        "publisher":   publisher,
+        "media_type":  "game",
+    }
+
 # ============================================================
 # AniList API（アニメ）
 # ============================================================
@@ -1051,6 +1122,64 @@ def search_anime(query: str) -> list:
         st.warning(f"⚠️ AniList API エラー: {e}")
         return []
 
+def fetch_anime_by_id(anilist_id: int) -> dict | None:
+    gql = """
+    query ($id: Int) {
+      Media(id: $id, type: ANIME) {
+        id
+        title { native romaji english }
+        coverImage { large }
+        genres
+        startDate { year month day }
+        averageScore
+        staff(perPage: 5, sort: RELEVANCE) {
+          edges { role node { name { full } } }
+        }
+      }
+    }
+    """
+    try:
+        res = requests.post(
+            ANILIST_URL,
+            json={"query": gql, "variables": {"id": int(anilist_id)}},
+            headers={"Content-Type": "application/json"},
+            timeout=10,
+        )
+        if res.status_code != 200:
+            return None
+        m = res.json().get("data", {}).get("Media")
+        if not m:
+            return None
+        title = m.get("title") or {}
+        native = title.get("native") or ""
+        romaji = title.get("romaji") or ""
+        english = title.get("english") or ""
+        sd = m.get("startDate", {}) or {}
+        release = ""
+        if sd.get("year"):
+            mm = sd.get("month") or 1
+            dd = sd.get("day") or 1
+            release = f"{sd['year']}-{mm:02d}-{dd:02d}"
+        director = ""
+        for edge in m.get("staff", {}).get("edges", []):
+            if edge.get("role", "") in ("Director", "Series Director"):
+                director = edge["node"]["name"]["full"]
+                break
+        return {
+            "id":          m["id"],
+            "title":       native or romaji,
+            "title_romaji": romaji,
+            "title_en":    english,
+            "cover_url":   (m.get("coverImage") or {}).get("large", ""),
+            "release":     release,
+            "genres":      m.get("genres", []),
+            "director":    director,
+            "score":       round(m["averageScore"] / 10, 1) if m.get("averageScore") else None,
+            "media_type":  "anime",
+        }
+    except Exception:
+        return None
+
 # ============================================================
 # iTunes Search API（音楽アルバム）
 # ============================================================
@@ -1083,6 +1212,29 @@ def search_albums(query: str, artist: str = None) -> list:
             "media_type": "album",
         })
     return results
+
+def fetch_album_by_id(collection_id: int) -> dict | None:
+    res = requests.get(
+        "https://itunes.apple.com/lookup",
+        params={"id": collection_id, "entity": "album", "country": "JP", "lang": "ja_jp"},
+        headers={"User-Agent": "ArteMis/1.0"},
+    )
+    if res.status_code != 200:
+        return None
+    items = res.json().get("results", [])
+    if not items:
+        return None
+    item = items[0]
+    cover_url = item.get("artworkUrl100", "").replace("100x100bb", "600x600bb")
+    release = (item.get("releaseDate", "") or "")[:10]
+    return {
+        "id":         item.get("collectionId", 0),
+        "title":      item.get("collectionName", ""),
+        "artist":     item.get("artistName", ""),
+        "release":    release,
+        "cover_url":  cover_url,
+        "media_type": "album",
+    }
 
 # ============================================================
 # 漫画（楽天ブックス コミックジャンル）
@@ -1428,7 +1580,7 @@ def create_notion_page(jp_title: str, en_title: str, media_type_label: str,
         "International Title": {"rich_text": [{"type": "text", "text": {"content": en_title}, "annotations": {"italic": True}}]},
         "媒体":               {"multi_select": [{"name": media_type_label}]},
         **({"TMDB_ID": {"number": tmdb_id}} if tmdb_id else {}),
-        **({"MEDIA_TYPE": {"multi_select": [{"name": media_type}]}} if media_type and media_type not in ("book", "manga", "album", "game") else {}),
+        **({"MEDIA_TYPE": {"multi_select": [{"name": media_type}]}} if media_type else {}),
         "WLflg":              {"checkbox": wlflg},
     }
     if tmdb_release and str(tmdb_release)[:10]:
@@ -2446,9 +2598,19 @@ if mode == "新規登録":
                             st.error("❌ 登録失敗")
 
         # ── 検索結果一覧（カード＋チェック）──
-        elif st.session_state.new_search_results:
+        elif st.session_state.get("new_search_done", False):
             results_list = st.session_state.new_search_results
             excluded_list = st.session_state.get("new_search_excluded", [])
+            if not results_list:
+                if excluded_list:
+                    st.warning(f"検索結果はすべて登録済みのため除外されました（{len(excluded_list)} 件）")
+                    with st.expander("除外されたタイトルを表示"):
+                        for t in excluded_list:
+                            st.caption(f"・{t}")
+                else:
+                    st.warning("候補が見つかりませんでした")
+                st.stop()
+
             st.caption(f"{len(results_list)} 件の候補　チェックして登録リストに追加できます")
             if excluded_list:
                 st.caption(f"⚠️ {len(excluded_list)} 件は登録済みのため除外")
@@ -2833,11 +2995,76 @@ if mode == "自動同期" and st.session_state.is_running:
 
             props     = item["properties"]
             log_title, jp, en = get_title(props)
+            media_label_val = get_page_media(item)
             notion_ok_now, drive_ok_now = get_diff_status(item)
             is_movie_drama = any(
                 m["name"] in ["映画", "ドラマ"]
                 for m in props.get("媒体", {}).get("multi_select", [])
             )
+
+            if not is_refresh and media_label_val not in ("映画", "ドラマ"):
+                cover_url = ""
+                src = "🆔 ID参照"
+                isbn_val = ""
+                target_media_type = media_label_to_media_type(media_label_val)
+                if media_label_val == "アニメ":
+                    anilist_id = props.get("AniList_ID", {}).get("number")
+                    if anilist_id:
+                        anime = fetch_anime_by_id(int(anilist_id))
+                        cover_url = anime.get("cover_url", "") if anime else ""
+                elif media_label_val == "ゲーム":
+                    igdb_id = props.get("IGDB_ID", {}).get("number")
+                    if igdb_id:
+                        game = fetch_game_by_id(int(igdb_id))
+                        cover_url = game.get("cover_url", "") if game else ""
+                elif media_label_val == "音楽アルバム":
+                    itunes_id = props.get("iTunes_ID", {}).get("number")
+                    if itunes_id:
+                        album = fetch_album_by_id(int(itunes_id))
+                        cover_url = album.get("cover_url", "") if album else ""
+                elif media_label_val in ("書籍", "漫画"):
+                    isbn_val = "".join(t["plain_text"] for t in (props.get("ISBN") or {}).get("rich_text", []))
+                    author_val = "".join(t["plain_text"] for t in (props.get("クリエイター") or {}).get("rich_text", []))
+                    title_val = jp or en or log_title
+                    cover_candidates = collect_book_cover_candidates(isbn_val, title_val, author_val or None, "")
+                    cover_url = choose_best_cover(cover_candidates) or ""
+                else:
+                    cover_url = ""
+
+                if not cover_url:
+                    msg = f"⏸️ ID未設定 or 取得失敗: {log_title}"
+                    st.write(msg)
+                    maintain_log.append(log_title)
+                    count += 1
+                    pbar.progress((count) / total_count if total_count else 1)
+                    status.update(label=f"{label_mode}中... {count} / {total_count} 件", state="running")
+                    time.sleep(0.1)
+                    continue
+
+                need_notion = not notion_ok_now
+                need_drive  = not drive_ok_now
+                n_ok = update_notion_cover(item["id"], cover_url, None, None, is_refresh=False) if need_notion else True
+                mt_ok = ensure_media_type_property(item["id"], target_media_type, props=props)
+                if not mt_ok:
+                    error_log.append(f"⚠️ MEDIA_TYPE更新失敗: {log_title}")
+                drive_id = isbn_val if media_label_val in ("書籍", "漫画") and isbn_val else (props.get("AniList_ID", {}).get("number") or props.get("IGDB_ID", {}).get("number") or props.get("iTunes_ID", {}).get("number") or item["id"])
+                d_ok = bool(save_to_drive(cover_url, log_title, drive_id)) if need_drive else True
+                entry = build_update_log(log_title, src, need_notion, n_ok, need_drive, d_ok, True, [], is_refresh=False)
+                if (not need_notion or n_ok) and (not need_drive or d_ok):
+                    st.write(entry)
+                    success_log.append(entry)
+                else:
+                    fail_parts = []
+                    if need_notion and not n_ok: fail_parts.append("Notion更新失敗")
+                    if need_drive  and not d_ok: fail_parts.append("Drive保存失敗")
+                    msg = f"❌ {log_title}（{' / '.join(fail_parts)}）"
+                    st.write(msg)
+                    error_log.append(msg)
+                count += 1
+                pbar.progress((count) / total_count if total_count else 1)
+                status.update(label=f"{label_mode}中... {count} / {total_count} 件", state="running")
+                time.sleep(0.1)
+                continue
 
             if is_refresh and not has_any_id(props):
                 current_cover = get_current_notion_url(item)
@@ -2861,6 +3088,11 @@ if mode == "自動同期" and st.session_state.is_running:
                 patch_body      = {}
                 if icon_url:
                     patch_body["icon"] = {"type": "external", "external": {"url": icon_url}}
+                target_media_type = media_label_to_media_type(media_label_val) if media_label_val else ""
+                if target_media_type:
+                    patch_body.setdefault("properties", {})["MEDIA_TYPE"] = {
+                        "multi_select": [{"name": target_media_type}]
+                    }
 
                 # クリエイター名正規化（書籍・漫画・音楽・ゲーム共通）
                 if media_label_val in ("書籍", "漫画", "音楽アルバム", "ゲーム"):
