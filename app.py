@@ -31,7 +31,7 @@ NOTION_HEADERS = {
 
 DEFAULT_TIMEOUT = 20
 REFRESH_BATCH_SIZE = 20
-APP_VERSION = "7.24"
+APP_VERSION = "7.25"
 
 # ============================================================
 # 媒体マッピング
@@ -92,6 +92,30 @@ def format_cover_url(url: str, max_len: int = 90) -> str:
     if len(base) <= max_len:
         return base
     return base[:60] + "…" + base[-20:]
+
+def emit_scroll_top_script():
+    st.components.v1.html(
+        """
+        <script>
+        function _scrollTopSafe(w) {
+          try { w.scrollTo({ top: 0, left: 0, behavior: "instant" }); }
+          catch (e1) {
+            try { w.scrollTo(0, 0); } catch (e2) {}
+          }
+          try { if (w.document && w.document.documentElement) w.document.documentElement.scrollTop = 0; } catch (e3) {}
+          try { if (w.document && w.document.body) w.document.body.scrollTop = 0; } catch (e4) {}
+        }
+        function _doScrollTop() {
+          _scrollTopSafe(window);
+          try { _scrollTopSafe(window.parent); } catch (e) {}
+        }
+        setTimeout(_doScrollTop, 0);
+        setTimeout(_doScrollTop, 120);
+        setTimeout(_doScrollTop, 400);
+        </script>
+        """,
+        height=0,
+    )
 
 # ============================================================
 # 登録完了後UI（共通）
@@ -2461,6 +2485,7 @@ def _focus_management_page(page_id: str, title: str, media_label: str | None = N
     st.session_state.focus_page_id = page_id
     st.session_state.pending_focus_page_id = page_id
     st.session_state.manual_page = 0
+    st.session_state.pending_force_scroll_top = True
     # manual_search_query(widget key) は生成後に直接更新できないため、次runで反映する
     st.session_state["pending_manual_search_query"] = title or ""
     # サイドバー媒体フィルタで新規作成ページが隠れないようにする
@@ -2515,30 +2540,11 @@ if is_drive_skip_mode():
     st.info("⏭ Driveデータスキップ機能ON: Drive保存/照合はスキップして動作中です。")
 if "pending_notice" in st.session_state:
     st.success(st.session_state.pop("pending_notice"))
-    # 新規作成直後は先頭へスクロールしてフォーカスされた編集カードを見つけやすくする
-    # 実行タイミング差や環境差を吸収するため複数回トライする
-    st.components.v1.html(
-        """
-        <script>
-        function _scrollTopSafe(w) {
-          try { w.scrollTo({ top: 0, left: 0, behavior: "instant" }); }
-          catch (e1) {
-            try { w.scrollTo(0, 0); } catch (e2) {}
-          }
-          try { if (w.document && w.document.documentElement) w.document.documentElement.scrollTop = 0; } catch (e3) {}
-          try { if (w.document && w.document.body) w.document.body.scrollTop = 0; } catch (e4) {}
-        }
-        function _doScrollTop() {
-          _scrollTopSafe(window);
-          try { _scrollTopSafe(window.parent); } catch (e) {}
-        }
-        setTimeout(_doScrollTop, 0);
-        setTimeout(_doScrollTop, 120);
-        setTimeout(_doScrollTop, 400);
-        </script>
-        """,
-        height=0,
-    )
+    emit_scroll_top_script()
+if "pending_warning" in st.session_state:
+    st.warning(st.session_state.pop("pending_warning"))
+if st.session_state.pop("pending_force_scroll_top", False):
+    emit_scroll_top_script()
 
 for key, default in {
     "is_running":         False,
@@ -4805,6 +4811,7 @@ if mode == "データ管理":
     pending_focus_id = st.session_state.pop("pending_focus_page_id", None)
     if pending_focus_id:
         st.session_state.focus_page_id = pending_focus_id
+        st.session_state.pending_force_scroll_top = True
         # フォーカス遷移時は検索欄も対象タイトルへ同期（前回検索の残りで隠れないようにする）
         pending_q = st.session_state.get("pending_manual_search_query", "")
         st.session_state["_cti_manual_search_query"] = pending_q
@@ -4870,7 +4877,8 @@ if mode == "データ管理":
         is_tmdb_media = page_media in ("映画", "ドラマ")
         is_event_media = page_media in ("出演", "演奏会（鑑賞）", "ライブ/ショー", "展示会", "イベント")
 
-        with st.expander(f"{log_title}", expanded=(st.session_state.get("focus_page_id") == page_id)):
+        exp_default = (st.session_state.get("focus_page_id") == page_id) or bool(search_query)
+        with st.expander(f"{log_title}", expanded=exp_default):
             # 候補反映でセットしたタイトルを、次runで入力欄へ確実に反映
             pending_jp_key = f"pending_edit_jp_{page_id}"
             pending_en_key = f"pending_edit_en_{page_id}"
@@ -5065,6 +5073,7 @@ if mode == "データ管理":
 
                     c1, c2 = st.columns([1, 1])
                     if c1.button("作曲家を検索", key=f"edit_score_comp_search_{page_id}"):
+                        st.session_state.focus_page_id = page_id
                         if comp_query.strip():
                             with st.spinner("作曲家を検索中..."):
                                 composers, err = search_mb_composer(comp_query.strip())
@@ -5083,6 +5092,7 @@ if mode == "データ管理":
                         ]
                         sel_idx = st.selectbox("作曲家候補", options=list(range(len(labels))), format_func=lambda i: labels[i], key=f"edit_score_comp_pick_{page_id}")
                         if c2.button("この作曲家の作品を取得", key=f"edit_score_work_fetch_{page_id}"):
+                            st.session_state.focus_page_id = page_id
                             composer = composers[sel_idx]
                             with st.spinner("作品一覧を取得中..."):
                                 works = search_mb_works(composer["id"], work_filter.strip())
@@ -5093,6 +5103,7 @@ if mode == "データ管理":
                         w_options = [w["title"] + (f"　{w['disambiguation']}" if w.get("disambiguation") else "") for w in works]
                         w_pick = st.selectbox("作品候補", w_options, key=f"edit_score_work_pick_{page_id}")
                         if st.button("候補を反映", key=f"edit_score_work_apply_{page_id}"):
+                            st.session_state.focus_page_id = page_id
                             picked = works[w_options.index(w_pick)]
                             title_val = picked.get("title", "")
                             composer_name = ""
@@ -5122,11 +5133,12 @@ if mode == "データ管理":
                                         p["properties"]["International Title"] = patch["International Title"]
                                         if "クリエイター" in patch:
                                             p["properties"]["クリエイター"] = patch["クリエイター"]
-                                st.success("タイトル欄に反映して保存しました")
+                                st.session_state.pending_notice = "✅ タイトル欄に反映して保存しました"
                             else:
-                                st.warning("候補は反映しましたが保存に失敗しました。基本を保存を押してください。")
+                                st.session_state.pending_warning = "候補は反映しましたが保存に失敗しました。基本を保存を押してください。"
                             st.rerun()
                     elif work_filter.strip() and st.button("タイトルのみで候補検索", key=f"edit_score_title_only_{page_id}"):
+                        st.session_state.focus_page_id = page_id
                         with st.spinner("タイトル候補を検索中..."):
                             cands, err = search_mb_works_by_title(work_filter.strip(), limit=12)
                         if err:
