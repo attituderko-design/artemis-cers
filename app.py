@@ -48,7 +48,7 @@ NOTION_HEADERS = {
 
 DEFAULT_TIMEOUT = 20
 REFRESH_BATCH_SIZE = 20
-APP_VERSION = "9.02"
+APP_VERSION = "9.03"
 
 # ============================================================
 # 媒体マッピング
@@ -2871,6 +2871,11 @@ for key, default in {
     "refresh_maintenance_mode": "partial",
     "refresh_maintenance_scope": "auto",
     "refresh_touched_performance": False,
+    "refresh_started_at": None,
+    "refresh_last_seconds": None,
+    "refresh_last_count": 0,
+    "refresh_last_maintenance_seconds": None,
+    "refresh_last_maintenance_applied": False,
 }.items():
     if key not in st.session_state:
         st.session_state[key] = default
@@ -3040,8 +3045,23 @@ with st.sidebar:
                 st.session_state.refresh_maintain_log = []
                 st.session_state.refresh_error_log = []
                 st.session_state.refresh_touched_performance = False
+                st.session_state.refresh_started_at = time.time()
+                st.session_state.refresh_last_seconds = None
+                st.session_state.refresh_last_count = 0
+                st.session_state.refresh_last_maintenance_seconds = None
+                st.session_state.refresh_last_maintenance_applied = False
                 st.rerun()
             st.caption("IDを基にすべてのフィールドを強制上書きします\nIDのないデータは情報の正規化のみ実施")
+            last_sec = st.session_state.get("refresh_last_seconds")
+            if isinstance(last_sec, (int, float)):
+                mm = int(last_sec // 60)
+                ss = int(last_sec % 60)
+                maint = st.session_state.get("refresh_last_maintenance_seconds")
+                count = st.session_state.get("refresh_last_count", 0)
+                if isinstance(maint, (int, float)):
+                    st.caption(f"前回リフレッシュ: {mm:02d}:{ss:02d} / 対象 {count} 件 / 整合修復 {maint:.1f}s")
+                else:
+                    st.caption(f"前回リフレッシュ: {mm:02d}:{ss:02d} / 対象 {count} 件")
             if st.button("⏹ 停止", use_container_width=True):
                 st.session_state.is_running = False
                 st.rerun()
@@ -4787,12 +4807,16 @@ if mode == "出演者管理":
         st.caption("人数が多い運用向けに、明細ではなく演奏会単位の件数サマリで表示します。")
         if st.button("🔍 整合チェックを実行", key="reconcile_run"):
             with st.spinner("整合チェック実行中..."):
+                _t0 = time.time()
                 st.session_state.reconcile_report = analyze_performance_relation_integrity(force_refresh=False)
+                st.session_state.reconcile_last_seconds = round(time.time() - _t0, 2)
         report = st.session_state.get("reconcile_report")
         if report:
             if report.get("error"):
                 st.error(report.get("error"))
             else:
+                if "reconcile_last_seconds" in st.session_state:
+                    st.caption(f"整合チェック実行時間: {st.session_state.get('reconcile_last_seconds', 0):.2f}s")
                 totals = report.get("totals", {})
                 c1, c2, c3, c4 = st.columns(4)
                 c1.metric("対象演奏会", totals.get("performance_count", 0))
@@ -5523,11 +5547,13 @@ if mode == "自動同期" and st.session_state.is_running:
             st.rerun()
         if st.session_state.refresh_cursor >= total_count:
             should_run_maintenance = False
+            maintenance_elapsed = None
             if st.session_state.get("refresh_maintenance_enabled", True):
                 scope = st.session_state.get("refresh_maintenance_scope", "auto")
                 should_run_maintenance = (scope == "always") or bool(st.session_state.get("refresh_touched_performance", False))
             if should_run_maintenance:
                 with st.spinner("整合チェック修復を実行中..."):
+                    _maint_t0 = time.time()
                     report = analyze_performance_relation_integrity(force_refresh=False)
                     if report.get("error"):
                         st.warning(f"整合修復をスキップ: {report.get('error')}")
@@ -5545,8 +5571,16 @@ if mode == "自動同期" and st.session_state.is_running:
                         st.session_state.pending_notice = msg
                         if errs:
                             st.session_state.pending_warning = "整合修復で一部失敗があります（出演者管理の整合チェックで要確認）"
+                    maintenance_elapsed = round(time.time() - _maint_t0, 2)
             elif st.session_state.get("refresh_maintenance_enabled", True):
                 st.session_state.pending_notice = "⏭ 整合修復を省略: 今回の更新対象に出演/演奏曲が含まれなかったため"
+            started_at = st.session_state.get("refresh_started_at")
+            if isinstance(started_at, (int, float)):
+                st.session_state.refresh_last_seconds = max(0, round(time.time() - started_at, 2))
+            st.session_state.refresh_last_count = total_count
+            st.session_state.refresh_last_maintenance_seconds = maintenance_elapsed
+            st.session_state.refresh_last_maintenance_applied = bool(should_run_maintenance)
+            st.session_state.refresh_started_at = None
             st.session_state.is_running = False
             st.session_state.refresh_targets_ids = []
             st.session_state.refresh_touched_performance = False
