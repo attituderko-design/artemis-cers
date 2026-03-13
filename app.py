@@ -31,7 +31,7 @@ NOTION_HEADERS = {
 
 DEFAULT_TIMEOUT = 20
 REFRESH_BATCH_SIZE = 20
-APP_VERSION = "7.17"
+APP_VERSION = "7.19"
 
 # ============================================================
 # 媒体マッピング
@@ -2344,9 +2344,13 @@ def _add_performance_page_cache(page_id: str, title: str):
 
 def _clean_relation_ids(ids: list | None) -> list[str]:
     cleaned = []
+    seen = set()
     for rid in (ids or []):
         if isinstance(rid, str) and rid.strip():
-            cleaned.append(rid.strip())
+            v = rid.strip()
+            if v not in seen:
+                cleaned.append(v)
+                seen.add(v)
     return cleaned
 
 def _prune_selected_relations(selected: list[dict], valid_pages: list[dict]) -> list[dict]:
@@ -4997,7 +5001,25 @@ if mode == "データ管理":
                             title_val = picked.get("title", "")
                             st.session_state[f"pending_edit_jp_{page_id}"] = title_val
                             st.session_state[f"pending_edit_en_{page_id}"] = title_val
-                            st.success("タイトル欄に反映しました")
+                            # 反映後の再描画で確実に見えるよう、Notionにも即保存する
+                            patch = {
+                                "タイトル": {"title": [{"type": "text", "text": {"content": title_val}}]},
+                                "International Title": {"rich_text": [{"type": "text", "text": {"content": title_val}}]},
+                            }
+                            res = api_request(
+                                "patch",
+                                f"https://api.notion.com/v1/pages/{page_id}",
+                                headers=NOTION_HEADERS,
+                                json={"properties": patch},
+                            )
+                            if res is not None and res.status_code == 200:
+                                for p in st.session_state.pages:
+                                    if p.get("id") == page_id:
+                                        p["properties"]["タイトル"] = patch["タイトル"]
+                                        p["properties"]["International Title"] = patch["International Title"]
+                                st.success("タイトル欄に反映して保存しました")
+                            else:
+                                st.warning("候補は反映しましたが保存に失敗しました。基本を保存を押してください。")
                             st.rerun()
                     elif work_filter.strip() and st.button("タイトルのみで候補検索", key=f"edit_score_title_only_{page_id}"):
                         with st.spinner("タイトル候補を検索中..."):
