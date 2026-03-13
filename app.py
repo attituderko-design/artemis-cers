@@ -31,7 +31,7 @@ NOTION_HEADERS = {
 
 DEFAULT_TIMEOUT = 20
 REFRESH_BATCH_SIZE = 20
-APP_VERSION = "6.03"
+APP_VERSION = "7.00"
 
 # ============================================================
 # 媒体マッピング
@@ -40,9 +40,10 @@ MEDIA_ICON_MAP = {
     "映画":          ("🎬 映画",          "https://raw.githubusercontent.com/attituderko-design/artemis-cers/refs/heads/main/assets/icons/camera-reels.svg"),
     "ドラマ":        ("📺 ドラマ",        "https://raw.githubusercontent.com/attituderko-design/artemis-cers/refs/heads/main/assets/icons/display.svg"),
     "演奏会（鑑賞）": ("🎼 演奏会（鑑賞）", "https://raw.githubusercontent.com/attituderko-design/artemis-cers/refs/heads/main/assets/icons/music-note-beamed.svg"),
-    "演奏会（出演）": ("🎻 演奏会（出演）", "https://raw.githubusercontent.com/attituderko-design/artemis-cers/refs/heads/main/assets/icons/music-note-list.svg"),
+    "出演":          ("🎻 出演",          "https://raw.githubusercontent.com/attituderko-design/artemis-cers/refs/heads/main/assets/icons/music-note-list.svg"),
     "展示会":        ("🖼️ 展示会",        "https://raw.githubusercontent.com/attituderko-design/artemis-cers/refs/heads/main/assets/icons/exhibition.svg"),
     "ライブ/ショー": ("🎤 ライブ/ショー", "https://raw.githubusercontent.com/attituderko-design/artemis-cers/refs/heads/main/assets/icons/mic.svg"),
+    "イベント":      ("🎆 イベント",      "https://raw.githubusercontent.com/attituderko-design/artemis-cers/refs/heads/main/assets/icons/exhibition.svg"),
     "書籍":          ("📖 書籍",          "https://raw.githubusercontent.com/attituderko-design/artemis-cers/refs/heads/main/assets/icons/book.svg"),
     "漫画":          ("📚 漫画",          "https://raw.githubusercontent.com/attituderko-design/artemis-cers/refs/heads/main/assets/icons/book-manga.svg"),
     "音楽アルバム":  ("🎵 音楽アルバム",  "https://raw.githubusercontent.com/attituderko-design/artemis-cers/refs/heads/main/assets/icons/disc.svg"),
@@ -51,10 +52,15 @@ MEDIA_ICON_MAP = {
     "アニメ":        ("🌟 アニメ",        "https://raw.githubusercontent.com/attituderko-design/artemis-cers/refs/heads/main/assets/icons/anime.svg"),
 }
 
+MEDIA_LABEL_ALIASES = {
+    "演奏会（出演）": "出演",
+}
+
 RATING_OPTIONS = ["", "★", "★★", "★★★", "★★★★", "★★★★★"]
 
 def get_media_icon_url(media_label: str) -> str:
-    return MEDIA_ICON_MAP.get(media_label, ("", ""))[1]
+    normalized = MEDIA_LABEL_ALIASES.get(media_label, media_label)
+    return MEDIA_ICON_MAP.get(normalized, ("", ""))[1]
 
 ASSET_BASE_URL = "https://raw.githubusercontent.com/attituderko-design/artemis-cers/main/assets"
 
@@ -554,7 +560,40 @@ UNIQUE_KEY_MEDIA = {"映画", "ドラマ", "アニメ", "書籍", "漫画", "音
 def get_page_media(page) -> str | None:
     """ページの媒体ラベルを返す"""
     ms = page["properties"].get("媒体", {}).get("multi_select", [])
-    return ms[0]["name"] if ms else None
+    raw = ms[0]["name"] if ms else None
+    return MEDIA_LABEL_ALIASES.get(raw, raw)
+
+def migrate_media_label_in_notion(old_label: str, new_label: str) -> tuple[int, int]:
+    pages = load_notion_data()
+    if not st.session_state.get("last_notion_load_ok", True):
+        return 0, 0
+    total = 0
+    updated = 0
+    for p in pages:
+        pid = p.get("id")
+        props = p.get("properties", {})
+        ms = (props.get("媒体") or {}).get("multi_select", [])
+        names = [m.get("name") for m in ms if m.get("name")]
+        if not names or old_label not in names:
+            continue
+        total += 1
+        new_names = [new_label if n == old_label else n for n in names]
+        # 重複排除しつつ順序維持
+        seen = set()
+        uniq = []
+        for n in new_names:
+            if n not in seen:
+                uniq.append(n)
+                seen.add(n)
+        res = api_request(
+            "patch",
+            f"https://api.notion.com/v1/pages/{pid}",
+            headers=NOTION_HEADERS,
+            json={"properties": {"媒体": {"multi_select": [{"name": n} for n in uniq]}}},
+        )
+        if res is not None and res.status_code == 200:
+            updated += 1
+    return total, updated
 
 def filter_target_pages(all_pages: list) -> list:
     """データ管理・自動同期対象：全媒体"""
@@ -1971,9 +2010,10 @@ def location_search_ui(key_prefix: str, media_label: str, initial_location: dict
         "映画":          ("📍 鑑賞した場所（任意）", "例: TOHOシネマズ梅田"),
         "ドラマ":        ("📍 鑑賞した場所（任意）", "例: 自宅 / Netflix"),
         "演奏会（鑑賞）": ("📍 会場（任意）",          "例: フェニーチェ堺"),
-        "演奏会（出演）": ("📍 会場（任意）",          "例: フェニーチェ堺"),
+        "出演":          ("📍 会場（任意）",          "例: フェニーチェ堺"),
         "展示会":        ("📍 会場（任意）",          "例: 国立国際美術館"),
         "ライブ/ショー": ("📍 会場（任意）",          "例: 大阪城ホール"),
+        "イベント":      ("📍 会場（任意）",          "例: 淀川花火大会"),
         "書籍":          ("📍 読んだ場所や購入した場所（任意）",  "例: 梅田 蔦屋書店"),
         "漫画":          ("📍 読んだ場所や購入した場所（任意）",  "例: とらのあな"),
         "音楽アルバム":  ("📍 聴いた場所や購入した場所（任意）",  "例: タワーレコード梅田"),
@@ -2254,7 +2294,7 @@ def _find_score_page_by_title(score_pages: list[dict], title: str) -> dict | Non
 
 
 def _get_performance_pages() -> list[dict]:
-    """演奏会（出演）ページ一覧を取得（[{id, title}]）。セッションキャッシュあり。"""
+    """出演ページ一覧を取得（[{id, title}]）。セッションキャッシュあり。"""
     if "performance_pages_cache" in st.session_state:
         return st.session_state.performance_pages_cache
     if st.session_state.get("pages_loaded") and st.session_state.get("pages"):
@@ -2267,7 +2307,7 @@ def _get_performance_pages() -> list[dict]:
             st.session_state.pages_loaded = True
     perf_pages = []
     for p in pages:
-        if get_page_media(p) == "演奏会（出演）":
+        if get_page_media(p) == "出演":
             title = get_title(p["properties"])[0]
             perf_pages.append({"id": p["id"], "title": title})
     st.session_state.performance_pages_cache = perf_pages
@@ -2325,13 +2365,18 @@ def _extract_performance_defaults(page: dict | None) -> tuple[str, str, str, dic
     return release, watched, rating, location
 
 
-def _focus_management_page(page_id: str, title: str):
+def _focus_management_page(page_id: str, title: str, media_label: str | None = None):
     if not page_id:
         return
     st.session_state.focus_page_id = page_id
     st.session_state.manual_page = 0
     # manual_search_query(widget key) は生成後に直接更新できないため、次runで反映する
     st.session_state["pending_manual_search_query"] = title or ""
+    # サイドバー媒体フィルタで新規作成ページが隠れないようにする
+    current_filter = st.session_state.get("sidebar_media_filter", [])
+    if media_label:
+        if current_filter and media_label not in current_filter:
+            st.session_state["sidebar_media_filter"] = list(current_filter) + [media_label]
 
 def check_duplicate(tmdb_id: int, pages: list) -> list:
     """TMDB_IDが一致する既存ページを返す"""
@@ -2471,6 +2516,27 @@ with st.sidebar:
                 st.session_state.search_results = {}
                 st.session_state.manual_page    = 0
                 st.success(f"{len(st.session_state.pages)} 件取得しました（全媒体: {len(st.session_state.all_pages)} 件）")
+    if st.button("🛠 媒体名一括変換: 演奏会（出演）→出演", use_container_width=True, key="migrate_media_performance"):
+        with st.spinner("Notionの媒体名を一括変換中..."):
+            target_count, updated_count = migrate_media_label_in_notion("演奏会（出演）", "出演")
+            if target_count == 0:
+                st.info("変換対象はありませんでした。")
+            else:
+                st.success(f"変換完了: {updated_count} / {target_count} 件")
+            all_pages = load_notion_data()
+            if st.session_state.get("last_notion_load_ok", True):
+                st.session_state.all_pages      = all_pages
+                st.session_state.pages          = filter_target_pages(all_pages)
+                st.session_state.pages_loaded   = True
+                st.session_state.search_results = {}
+                st.session_state.manual_page    = 0
+                st.session_state.performance_pages_cache = [
+                    {"id": p["id"], "title": get_title(p["properties"])[0]}
+                    for p in st.session_state.pages
+                    if get_page_media(p) == "出演"
+                ]
+            else:
+                st.warning("再取得に失敗しました。手動でNotionデータ取得を再実行してください。")
     if st.button("🗂 Drive一覧を再取得", use_container_width=True, key="reload_drive_list"):
         with st.spinner("Drive一覧を取得中..."):
             refresh_drive_files()
@@ -2718,15 +2784,15 @@ if mode == "新規登録":
             st.session_state.reg_cart           = []
             st.session_state.prev_media_label   = media_label
 
-        EVENT_MEDIA = ["演奏会（鑑賞）", "演奏会（出演）", "展示会", "ライブ/ショー"]
+        EVENT_MEDIA = ["演奏会（鑑賞）", "出演", "展示会", "ライブ/ショー", "イベント"]
 
         # ============================================================
-        # イベント系（演奏会（鑑賞）・演奏会（出演）・展示会・ライブ/ショー）- 単体登録のみ
+        # イベント系（演奏会（鑑賞）・出演・展示会・ライブ/ショー・イベント）- 単体登録のみ
         # ============================================================
         if media_label in EVENT_MEDIA:
             st.divider()
-            is_performance  = (media_label == "演奏会（出演）")
-            is_concert      = media_label in ("演奏会（鑑賞）", "演奏会（出演）")
+            is_performance  = (media_label == "出演")
+            is_concert      = media_label in ("演奏会（鑑賞）", "出演")
             is_live         = (media_label == "ライブ/ショー")
             has_setlist     = is_concert or is_live
 
@@ -2777,7 +2843,7 @@ if mode == "新規登録":
                 MAX_MAIN   = 25
                 MAX_ENCORE = 5
 
-                # セッションステート構造: [{"title": "曲名", "part": "Vn."}]  ※part は演奏会（出演）のみ使用
+                # セッションステート構造: [{"title": "曲名", "part": "Vn."}]  ※part は出演のみ使用
                 def render_song_list(slot_key, max_count, label):
                     """曲リストUIを描画し、現在のリストを返す"""
                     songs = st.session_state[slot_key]
@@ -3313,7 +3379,7 @@ if mode == "新規登録":
                         else:
                             cover_url_final = MB_DEFAULT_COVER
 
-                    # ── 演奏会（出演）との関連付け ──
+                    # ── 出演との関連付け ──
                     st.divider()
                     st.subheader("🎤 出演履歴の関連付け")
                     if "score_perf_selected" not in st.session_state:
@@ -3322,7 +3388,7 @@ if mode == "新規登録":
                         st.session_state.score_perf_selected_ids = []
                     perf_pages = _get_performance_pages()
                     if not st.session_state.get("last_notion_load_ok", True):
-                        st.warning("⚠️ 演奏会（出演）の取得に失敗しました。手動で再読み込みしてください。")
+                        st.warning("⚠️ 出演データの取得に失敗しました。手動で再読み込みしてください。")
                     perf_query = st.text_input("公演名で検索", key="score_perf_query", placeholder="例: 定期演奏会")
                     perf_matches = []
                     if perf_query:
@@ -3346,24 +3412,29 @@ if mode == "新規登録":
                                 st.rerun()
                     elif perf_query:
                         st.caption("候補が見つかりませんでした。")
+                    if perf_query:
                         if st.button("＋ 新規作成して追加", key="score_perf_create"):
-                            with st.spinner("演奏会（出演）を新規作成中..."):
-                                ok = create_notion_page(
-                                    jp_title=perf_query, en_title=perf_query,
-                                    media_type_label="演奏会（出演）",
-                                    tmdb_id=None, media_type="event",
-                                    cover_url=get_media_icon_url("演奏会（出演）"),
-                                    tmdb_release="",
-                                    details={"genres": [], "cast": "", "director": "", "score": None},
-                                )
-                            if ok:
-                                new_id = st.session_state.get("last_created_page_id")
-                                _add_performance_page_cache(new_id, perf_query)
-                                add_selected_perf(new_id, perf_query)
-                                st.success("✅ 演奏会（出演）を追加しました")
-                                st.rerun()
+                            new_title = perf_query.strip()
+                            if not new_title:
+                                st.warning("新規作成するタイトルを入力してください。")
                             else:
-                                st.error("❌ 演奏会（出演）の作成に失敗しました")
+                                with st.spinner("出演データを新規作成中..."):
+                                    ok = create_notion_page(
+                                        jp_title=new_title, en_title=new_title,
+                                        media_type_label="出演",
+                                        tmdb_id=None, media_type="event",
+                                        cover_url=get_media_icon_url("出演"),
+                                        tmdb_release="",
+                                        details={"genres": [], "cast": "", "director": "", "score": None},
+                                    )
+                                if ok:
+                                    new_id = st.session_state.get("last_created_page_id")
+                                    _add_performance_page_cache(new_id, new_title)
+                                    add_selected_perf(new_id, new_title)
+                                    st.success("✅ 出演データを追加しました")
+                                    st.rerun()
+                                else:
+                                    st.error("❌ 出演データの作成に失敗しました")
 
                     if st.session_state.score_perf_selected:
                         st.session_state.score_perf_selected_ids = _clean_relation_ids(
@@ -3399,7 +3470,7 @@ if mode == "新規登録":
                                     selected_perf_ids = [picked["id"]]
                                     st.session_state.score_perf_selected_ids = selected_perf_ids
                         if not selected_perf_ids:
-                            st.warning("出演履歴が未選択です。演奏会（出演）を紐付ける場合は先に追加してください。")
+                            st.warning("出演履歴が未選択です。出演データを紐付ける場合は先に追加してください。")
                         perf_release, perf_watched, perf_rating, perf_location = "", "", "", None
                         if selected_perf_ids:
                             perf_page = _get_page_from_state_or_api(selected_perf_ids[0])
@@ -4609,7 +4680,7 @@ if mode == "データ管理":
 
         page_media = get_page_media(item)
         is_tmdb_media = page_media in ("映画", "ドラマ")
-        is_event_media = page_media in ("演奏会（出演）", "演奏会（鑑賞）", "ライブ/ショー", "展示会")
+        is_event_media = page_media in ("出演", "演奏会（鑑賞）", "ライブ/ショー", "展示会", "イベント")
 
         with st.expander(f"{log_title}", expanded=(st.session_state.get("focus_page_id") == page_id)):
             def run_single_refresh():
@@ -4837,12 +4908,12 @@ if mode == "データ管理":
                 else:
                     st.info("変更なし")
 
-            # ── 関連（演奏会（出演） ↔ 演奏曲）──
-            if page_media in ("演奏会（出演）", "演奏曲"):
+            # ── 関連（出演 ↔ 演奏曲）──
+            if page_media in ("出演", "演奏曲"):
                 st.divider()
                 st.caption("🔗 関連")
-                rel_prop = "演奏曲" if page_media == "演奏会（出演）" else "出演履歴"
-                target_pages = _get_score_pages() if page_media == "演奏会（出演）" else _get_performance_pages()
+                rel_prop = "演奏曲" if page_media == "出演" else "出演履歴"
+                target_pages = _get_score_pages() if page_media == "出演" else _get_performance_pages()
                 rel_state_key = f"edit_rel_{page_id}"
                 if rel_state_key not in st.session_state:
                     existing_rel = (props.get(rel_prop) or {}).get("relation", [])
@@ -4883,7 +4954,7 @@ if mode == "データ管理":
                         new_title = rel_query.strip()
                         if not new_title:
                             st.warning("新規作成するタイトルを入力してください。")
-                        elif page_media == "演奏会（出演）":
+                        elif page_media == "出演":
                             ok = create_notion_page(
                                 jp_title=new_title, en_title=new_title,
                                 media_type_label="演奏曲",
@@ -4900,15 +4971,15 @@ if mode == "データ管理":
                                     page_id=new_id,
                                     updated_page=st.session_state.get("last_created_page"),
                                 )
-                                _focus_management_page(new_id, new_title)
+                                _focus_management_page(new_id, new_title, "演奏曲")
                                 st.success("✅ 演奏曲を追加しました")
                                 st.rerun()
                         else:
                             ok = create_notion_page(
                                 jp_title=new_title, en_title=new_title,
-                                media_type_label="演奏会（出演）",
+                                media_type_label="出演",
                                 tmdb_id=None, media_type="event",
-                                cover_url=get_media_icon_url("演奏会（出演）"),
+                                cover_url=get_media_icon_url("出演"),
                                 tmdb_release="",
                                 details={"genres": [], "cast": "", "director": "", "score": None},
                             )
@@ -4920,8 +4991,8 @@ if mode == "データ管理":
                                     page_id=new_id,
                                     updated_page=st.session_state.get("last_created_page"),
                                 )
-                                _focus_management_page(new_id, new_title)
-                                st.success("✅ 演奏会（出演）を追加しました")
+                                _focus_management_page(new_id, new_title, "出演")
+                                st.success("✅ 出演データを追加しました")
                                 st.rerun()
 
                 if st.session_state[rel_state_key]:
@@ -5041,8 +5112,8 @@ if mode == "データ管理":
                 else:
                     st.info("変更なし")
 
-            # ── 演奏会（出演）セットリスト編集 ──
-            if page_media == "演奏会（出演）":
+            # ── 出演セットリスト編集 ──
+            if page_media == "出演":
                 st.divider()
                 st.caption("🎻 セットリスト編集")
                 existing_memo_full = "".join(t["plain_text"] for t in (props.get("メモ") or {}).get("rich_text", []))
