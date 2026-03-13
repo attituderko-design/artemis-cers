@@ -31,7 +31,7 @@ NOTION_HEADERS = {
 
 DEFAULT_TIMEOUT = 20
 REFRESH_BATCH_SIZE = 20
-APP_VERSION = "7.02"
+APP_VERSION = "7.03"
 
 # ============================================================
 # 媒体マッピング
@@ -2253,9 +2253,9 @@ def filter_registered(results: list, media_label: str, reg_ids: dict):
     return filtered, excluded
 
 
-def _get_score_pages() -> list[dict]:
+def _get_score_pages(force_refresh: bool = False) -> list[dict]:
     """演奏曲ページ一覧を取得（[{id, title}]）。セッションキャッシュあり。"""
-    if "score_pages_cache" in st.session_state:
+    if (not force_refresh) and "score_pages_cache" in st.session_state:
         return st.session_state.score_pages_cache
     if st.session_state.get("pages_loaded") and st.session_state.get("pages"):
         pages = st.session_state.pages
@@ -2293,9 +2293,9 @@ def _find_score_page_by_title(score_pages: list[dict], title: str) -> dict | Non
     return None
 
 
-def _get_performance_pages() -> list[dict]:
+def _get_performance_pages(force_refresh: bool = False) -> list[dict]:
     """出演ページ一覧を取得（[{id, title}]）。セッションキャッシュあり。"""
-    if "performance_pages_cache" in st.session_state:
+    if (not force_refresh) and "performance_pages_cache" in st.session_state:
         return st.session_state.performance_pages_cache
     if st.session_state.get("pages_loaded") and st.session_state.get("pages"):
         pages = st.session_state.pages
@@ -2329,6 +2329,15 @@ def _clean_relation_ids(ids: list | None) -> list[str]:
         if isinstance(rid, str) and rid.strip():
             cleaned.append(rid.strip())
     return cleaned
+
+def _prune_selected_relations(selected: list[dict], valid_pages: list[dict]) -> list[dict]:
+    valid_ids = {p.get("id") for p in valid_pages if p.get("id")}
+    pruned = []
+    for x in (selected or []):
+        xid = x.get("id")
+        if xid in valid_ids:
+            pruned.append(x)
+    return pruned
 
 
 def _get_page_from_state_or_api(page_id: str) -> dict | None:
@@ -2516,6 +2525,8 @@ with st.sidebar:
                 st.session_state.pages_loaded   = True
                 st.session_state.search_results = {}
                 st.session_state.manual_page    = 0
+                st.session_state.pop("score_pages_cache", None)
+                st.session_state.pop("performance_pages_cache", None)
                 st.success(f"{len(st.session_state.pages)} 件取得しました（全媒体: {len(st.session_state.all_pages)} 件）")
     if st.button("🛠 媒体名一括変換: 演奏会（出演）→出演", use_container_width=True, key="migrate_media_performance"):
         with st.spinner("Notionの媒体名を一括変換中..."):
@@ -3390,8 +3401,25 @@ if mode == "新規登録":
                     if "score_perf_selected_ids" not in st.session_state:
                         st.session_state.score_perf_selected_ids = []
                     perf_pages = _get_performance_pages()
+                    st.session_state.score_perf_selected = _prune_selected_relations(
+                        st.session_state.get("score_perf_selected", []),
+                        perf_pages,
+                    )
+                    st.session_state.score_perf_selected_ids = _clean_relation_ids(
+                        [x.get("id") for x in st.session_state.score_perf_selected]
+                    )
                     if not st.session_state.get("last_notion_load_ok", True):
                         st.warning("⚠️ 出演データの取得に失敗しました。手動で再読み込みしてください。")
+                    if st.button("🔄 出演候補を再読み込み", key="score_perf_reload"):
+                        perf_pages = _get_performance_pages(force_refresh=True)
+                        st.session_state.score_perf_selected = _prune_selected_relations(
+                            st.session_state.get("score_perf_selected", []),
+                            perf_pages,
+                        )
+                        st.session_state.score_perf_selected_ids = _clean_relation_ids(
+                            [x.get("id") for x in st.session_state.score_perf_selected]
+                        )
+                        st.rerun()
                     perf_query = st.text_input("公演名で検索", key="score_perf_query", placeholder="例: 定期演奏会")
                     perf_matches = []
                     if perf_query:
@@ -3434,6 +3462,10 @@ if mode == "新規登録":
                                     new_id = st.session_state.get("last_created_page_id")
                                     _add_performance_page_cache(new_id, new_title)
                                     add_selected_perf(new_id, new_title)
+                                    sync_notion_after_update(
+                                        page_id=new_id,
+                                        updated_page=st.session_state.get("last_created_page"),
+                                    )
                                     _focus_management_page(new_id, new_title, "出演")
                                     st.session_state.pending_app_mode = "データ管理"
                                     st.success("✅ 出演データを追加しました")
@@ -4931,6 +4963,17 @@ if mode == "データ管理":
                         {"id": r.get("id"), "title": id_to_title.get(r.get("id"), "（不明）")}
                         for r in existing_rel if r.get("id")
                     ]
+                st.session_state[rel_state_key] = _prune_selected_relations(
+                    st.session_state.get(rel_state_key, []),
+                    target_pages,
+                )
+                if st.button("🔄 関連候補を再読み込み", key=f"edit_rel_reload_{page_id}"):
+                    target_pages = _get_score_pages(force_refresh=True) if page_media == "出演" else _get_performance_pages(force_refresh=True)
+                    st.session_state[rel_state_key] = _prune_selected_relations(
+                        st.session_state.get(rel_state_key, []),
+                        target_pages,
+                    )
+                    st.rerun()
 
                 rel_query = st.text_input(
                     "関連先を検索",
