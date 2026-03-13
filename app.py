@@ -31,6 +31,7 @@ NOTION_HEADERS = {
 
 DEFAULT_TIMEOUT = 20
 REFRESH_BATCH_SIZE = 20
+APP_VERSION = "6.01"
 
 # ============================================================
 # 媒体マッピング
@@ -170,21 +171,32 @@ def get_drive_service():
         token_uri="https://oauth2.googleapis.com/token",
     )
     creds.refresh(Request())
-    return build("drive", "v3", credentials=creds)
+    return build("drive", "v3", credentials=creds, cache_discovery=False)
 
 def get_drive_service_safe():
-    """トークン期限切れ時にキャッシュをクリアして再取得するラッパー"""
+    """Drive接続の安全ラッパー（短時間の連続失敗はクールダウン）"""
+    now = time.time()
+    blocked_until = st.session_state.get("drive_blocked_until", 0)
+    if blocked_until and now < blocked_until:
+        return None
     try:
-        service = get_drive_service()
-        service.about().get(fields="user").execute()
-        return service
-    except Exception:
+        return get_drive_service()
+    except Exception as e:
         get_drive_service.clear()
         try:
             return get_drive_service()
-        except Exception as e:
-            st.error(f"Google Drive 認証エラー: {e}")
+        except Exception as e2:
+            st.session_state.drive_blocked_until = now + 45
+            last_err = st.session_state.get("drive_last_error", "")
+            msg = f"Google Drive 接続エラー: {e2 or e}"
+            if msg != last_err:
+                st.warning(msg)
+                st.session_state.drive_last_error = msg
             return None
+
+
+def is_drive_skip_mode() -> bool:
+    return bool(st.session_state.get("drive_skip_mode", False))
 
 # ============================================================
 # ユーティリティ
@@ -339,14 +351,23 @@ def is_incomplete(page) -> bool:
 # ============================================================
 
 def get_drive_files() -> dict:
+    if is_drive_skip_mode():
+        if "drive_files_cache" not in st.session_state:
+            st.session_state.drive_files_cache = {}
+        return st.session_state.drive_files_cache
     if "drive_files_cache" not in st.session_state or not isinstance(st.session_state.drive_files_cache, dict):
         refresh_drive_files()
     return st.session_state.drive_files_cache
 
 def refresh_drive_files():
+    if is_drive_skip_mode():
+        if "drive_files_cache" not in st.session_state:
+            st.session_state.drive_files_cache = {}
+        return
     service = get_drive_service_safe()
     if service is None:
-        st.session_state.drive_files_cache = {}
+        if "drive_files_cache" not in st.session_state:
+            st.session_state.drive_files_cache = {}
         return
     try:
         results = service.files().list(
@@ -355,19 +376,28 @@ def refresh_drive_files():
             pageSize=1000,
         ).execute()
         st.session_state.drive_files_cache = {f["name"]: f["id"] for f in results.get("files", [])}
+        st.session_state.drive_blocked_until = 0
     except Exception as e:
         st.warning(f"Drive一覧取得失敗: {e}")
-        st.session_state.drive_files_cache = {}
+        st.session_state.drive_blocked_until = time.time() + 60
+        if "drive_files_cache" not in st.session_state:
+            st.session_state.drive_files_cache = {}
 
 def drive_exists(title: str, tmdb_id) -> bool:
+    if is_drive_skip_mode():
+        return True
     return make_filename(title, tmdb_id) in get_drive_files()
 
 def drive_exists_fuzzy(title: str) -> bool:
+    if is_drive_skip_mode():
+        return True
     prefix = sanitize_filename(title) + "_"
     return any(name.startswith(prefix) and name.endswith(".jpg") for name in get_drive_files())
 
 def save_to_drive(cover_url: str, title: str, tmdb_id, image_bytes: bytes | None = None, mimetype: str = "image/jpeg") -> str | None:
     """Drive保存成功時はfile_idを返す、失敗時はNone"""
+    if is_drive_skip_mode():
+        return "SKIPPED"
     try:
         if image_bytes is None:
             if not cover_url:
@@ -384,6 +414,8 @@ def save_to_drive(cover_url: str, title: str, tmdb_id, image_bytes: bytes | None
 
 def get_drive_public_url(title: str, tmdb_id) -> str | None:
     """Drive上のファイルIDから公開URLを返す"""
+    if is_drive_skip_mode():
+        return None
     try:
         fname = make_filename(title, tmdb_id)
         files = get_drive_files()
@@ -399,6 +431,8 @@ def get_drive_public_url(title: str, tmdb_id) -> str | None:
         return None
 
 def delete_from_drive(title: str, tmdb_id) -> bool:
+    if is_drive_skip_mode():
+        return True
     try:
         fname = make_filename(title, tmdb_id)
         files = get_drive_files()
@@ -421,8 +455,11 @@ def delete_from_drive(title: str, tmdb_id) -> bool:
 def get_diff_status(item) -> tuple:
     log_title, _, _ = get_title(item["properties"])
     notion_ok = bool(item.get("cover"))
-    tmdb_id   = st.session_state.get("tmdb_id_cache", {}).get(item["id"])
-    drive_ok  = drive_exists(log_title, tmdb_id) if tmdb_id else drive_exists_fuzzy(log_title)
+    if is_drive_skip_mode():
+        drive_ok = True
+    else:
+        tmdb_id = st.session_state.get("tmdb_id_cache", {}).get(item["id"])
+        drive_ok = drive_exists(log_title, tmdb_id) if tmdb_id else drive_exists_fuzzy(log_title)
     return notion_ok, drive_ok
 
 def apply_diff_filter(pages: list, diff_filter: str) -> list:
@@ -441,7 +478,10 @@ def apply_diff_filter(pages: list, diff_filter: str) -> list:
 
 def diff_badge(item) -> str:
     notion_ok, drive_ok = get_diff_status(item)
-    badge = ("🟢" if notion_ok else "🔴") + " Notion " + ("🟢" if drive_ok else "🔴") + " Drive"
+    if is_drive_skip_mode():
+        badge = ("🟢" if notion_ok else "🔴") + " Notion ⏭ Drive"
+    else:
+        badge = ("🟢" if notion_ok else "🔴") + " Notion " + ("🟢" if drive_ok else "🔴") + " Drive"
     if is_unreleased(item):
         badge += " 🔜未公開"
     return badge
@@ -1150,6 +1190,32 @@ def search_mb_composer(name: str) -> tuple[list, str | None]:
             }
             for a in artists
         ], None
+    except Exception as e:
+        return [], str(e)
+
+
+def search_mb_works_by_title(title: str, limit: int = 10) -> tuple[list, str | None]:
+    """曲名でMusicBrainz Workを検索。(results, error_msg)"""
+    q = (title or "").strip()
+    if not q:
+        return [], None
+    try:
+        res = requests.get(
+            "https://musicbrainz.org/ws/2/work",
+            params={"query": f'work:"{q}"', "fmt": "json", "limit": limit},
+            headers=MB_HEADERS, timeout=8,
+        )
+        if res.status_code != 200:
+            return [], f"MusicBrainz API {res.status_code}: {res.text[:100]}"
+        works = res.json().get("works", [])
+        out = []
+        for w in works:
+            out.append({
+                "id": w.get("id", ""),
+                "title": w.get("title", ""),
+                "disambiguation": w.get("disambiguation", ""),
+            })
+        return out, None
     except Exception as e:
         return [], str(e)
 
@@ -1870,7 +1936,7 @@ def geocode_nominatim(query: str) -> list[dict]:
         return []
 
 
-def location_search_ui(key_prefix: str, media_label: str) -> dict | None:
+def location_search_ui(key_prefix: str, media_label: str, initial_location: dict | None = None) -> dict | None:
     """ロケーション検索UIコンポーネント。選択済みlocation dictを返す（未選択はNone）"""
     LOCATION_LABELS = {
         "映画":          ("📍 鑑賞した場所（任意）", "例: TOHOシネマズ梅田"),
@@ -1898,6 +1964,10 @@ def location_search_ui(key_prefix: str, media_label: str) -> dict | None:
         st.session_state[result_key]   = []
     if selected_key not in st.session_state:
         st.session_state[selected_key] = None
+    if initial_location and st.session_state[selected_key] is None:
+        st.session_state[selected_key] = initial_location
+        if not st.session_state[loc_key]:
+            st.session_state[loc_key] = initial_location.get("name") or initial_location.get("address") or ""
 
     st.caption(label)
     col_input, col_btn = st.columns([4, 1])
@@ -1917,6 +1987,11 @@ def location_search_ui(key_prefix: str, media_label: str) -> dict | None:
             st.warning("見つかりませんでした。候補がない場合はNotion上で入力してください。")
 
     results = st.session_state[result_key]
+    current = st.session_state.get(selected_key)
+    if current and current.get("lat") and current.get("lon"):
+        cname = current.get("name") or current.get("address") or "設定済み"
+        st.caption(f"現在の場所: {cname} （{current['lat']:.5f}, {current['lon']:.5f}）")
+
     if results:
         options = ["（選択してください）"] + [r["display"] for r in results]
         choice  = st.selectbox("候補を選択", options, key=f"{key_prefix}_loc_select")
@@ -2220,6 +2295,15 @@ def _extract_performance_defaults(page: dict | None) -> tuple[str, str, str, dic
         }
     return release, watched, rating, location
 
+
+def _focus_management_page(page_id: str, title: str):
+    if not page_id:
+        return
+    st.session_state.focus_page_id = page_id
+    st.session_state.manual_page = 0
+    st.session_state["_cti_manual_search_query"] = title or ""
+    st.session_state["manual_search_query"] = title or ""
+
 def check_duplicate(tmdb_id: int, pages: list) -> list:
     """TMDB_IDが一致する既存ページを返す"""
     return [p for p in pages if p["properties"].get("TMDB_ID", {}).get("number") == tmdb_id]
@@ -2261,7 +2345,9 @@ st.markdown(
     "<em><strong>ArtéMis</strong></em> — named after the goddess of the hunt and the moon. She keeps track of everything you've ever experienced.",
     unsafe_allow_html=True
 )
-st.caption("v6.00")
+st.caption(f"v{APP_VERSION}")
+if is_drive_skip_mode():
+    st.info("⏭ Driveデータスキップ機能ON: Drive保存/照合はスキップして動作中です。")
 
 for key, default in {
     "is_running":         False,
@@ -2300,6 +2386,7 @@ for key, default in {
     "refresh_error_log":   [],
     "auto_reload_mode":    "manual",
     "created_pages":       [],
+    "drive_skip_mode":     False,
 }.items():
     if key not in st.session_state:
         st.session_state[key] = default
@@ -2311,6 +2398,9 @@ with st.sidebar:
     st.header("操作パネル")
 
     st.divider()
+    st.toggle("Driveデータスキップ機能ON", key="drive_skip_mode")
+    if st.session_state.get("drive_skip_mode"):
+        st.caption("Drive連携はスキップ中です（判定/保存/一覧取得）。")
     if "auto_reload_mode" not in st.session_state:
         st.session_state.auto_reload_mode = "manual"
     current_label = (
@@ -2344,8 +2434,15 @@ with st.sidebar:
                 st.session_state.pages_loaded   = True
                 st.session_state.search_results = {}
                 st.session_state.manual_page    = 0
-                refresh_drive_files()
                 st.success(f"{len(st.session_state.pages)} 件取得しました（全媒体: {len(st.session_state.all_pages)} 件）")
+    if st.button("🗂 Drive一覧を再取得", use_container_width=True, key="reload_drive_list"):
+        with st.spinner("Drive一覧を取得中..."):
+            refresh_drive_files()
+            cnt = len(st.session_state.get("drive_files_cache", {}))
+            if cnt > 0:
+                st.success(f"Drive一覧を更新しました（{cnt} 件）")
+            else:
+                st.warning("Drive一覧が空です。接続またはフォルダ設定をご確認ください。")
 
     if not st.session_state.pages_loaded:
         st.caption("👆 まずデータを取得してください")
@@ -2985,7 +3082,11 @@ if mode == "新規登録":
                             item["wlflg"] = cols[4].checkbox("WL", value=item.get("wlflg", False), key=f"cart_wl_{item_uid}")
                             if cols[5].button("削除", key=f"cart_del_{item_uid}"):
                                 remove_indices.append(idx)
-                            selected_loc = location_search_ui(f"cart_{item_uid}", item_media)
+                            selected_loc = location_search_ui(
+                                f"cart_{item_uid}",
+                                item_media,
+                                initial_location=item.get("location"),
+                            )
                             if selected_loc:
                                 item["location"] = selected_loc
 
@@ -3823,7 +3924,13 @@ if mode == "新規登録":
                         item["wlflg"]    = cols[4].checkbox("WL", value=item.get("wlflg", False), key=f"cart_wl_{idx}")
                         if cols[5].button("🗑", key=f"cart_del_{idx}"):
                             remove_indices.append(idx)
-                        item["location"] = location_search_ui(f"cart_{idx}", item_media)
+                        selected_loc = location_search_ui(
+                            f"cart_{idx}",
+                            item_media,
+                            initial_location=item.get("location"),
+                        )
+                        if selected_loc:
+                            item["location"] = selected_loc
     
                 for i in sorted(remove_indices, reverse=True):
                     st.session_state.reg_cart.pop(i)
@@ -4033,7 +4140,7 @@ if mode == "自動同期" and st.session_state.is_running:
                     continue
 
                 need_notion = not notion_ok_now
-                need_drive  = not drive_ok_now
+                need_drive  = (not drive_ok_now) and (not is_drive_skip_mode())
                 n_ok = update_notion_cover(item["id"], cover_url, None, None, is_refresh=False) if need_notion else True
                 drive_id = isbn_val if media_label_val in ("書籍", "漫画") and isbn_val else (props.get("AniList_ID", {}).get("number") or props.get("IGDB_ID", {}).get("number") or props.get("iTunes_ID", {}).get("number") or item["id"])
                 d_ok = bool(save_to_drive(cover_url, log_title, drive_id)) if need_drive else True
@@ -4128,7 +4235,7 @@ if mode == "自動同期" and st.session_state.is_running:
                 time.sleep(0.1)
                 continue
             need_notion = True if is_refresh else not notion_ok_now
-            need_drive  = True if is_refresh else not drive_ok_now
+            need_drive  = (True if is_refresh else not drive_ok_now) and (not is_drive_skip_mode())
 
             date_prop        = props.get("リリース日", {}).get("date")
             existing_release = date_prop.get("start") if date_prop else None
@@ -4301,7 +4408,7 @@ if mode == "自動同期" and st.session_state.is_running:
                                         save_tmdb_id_to_notion(page_id, int(new_tmdb_id), mt)
                                         n_ok, d_ok, meta_ok, updated = update_all(
                                             page_id, cover_url, tmdb_release, existing_release,
-                                            title, int(new_tmdb_id), mt, True, True,
+                                            title, int(new_tmdb_id), mt, True, (not is_drive_skip_mode()),
                                             force_meta=True, props=props, season_number=season_number,
                                         )
                                         results.append((mt, n_ok and d_ok and meta_ok, "ok" if n_ok and d_ok and meta_ok else "failed"))
@@ -4325,7 +4432,7 @@ if mode == "自動同期" and st.session_state.is_running:
                                         save_tmdb_id_to_notion(page_id, int(new_tmdb_id), new_media_type)
                                         n_ok, d_ok, meta_ok, updated = update_all(
                                             page_id, cover_url, tmdb_release, existing_release,
-                                            title, int(new_tmdb_id), new_media_type, True, True,
+                                            title, int(new_tmdb_id), new_media_type, True, (not is_drive_skip_mode()),
                                             force_meta=True, props=props, season_number=season_number,
                                         )
                                         if n_ok and d_ok and meta_ok:
@@ -4454,7 +4561,7 @@ if mode == "データ管理":
         is_tmdb_media = page_media in ("映画", "ドラマ")
         is_event_media = page_media in ("演奏会（出演）", "演奏会（鑑賞）", "ライブ/ショー", "展示会")
 
-        with st.expander(f"{log_title}"):
+        with st.expander(f"{log_title}", expanded=(st.session_state.get("focus_page_id") == page_id)):
             def run_single_refresh():
                 media = page_media
                 existing_release = ((props.get("リリース日") or {}).get("date") or {}).get("start") or None
@@ -4476,7 +4583,7 @@ if mode == "データ管理":
                     tmdb_release = top.get("release_date") or top.get("first_air_date")
                     n_ok, d_ok, meta_ok, updated = update_all(
                         page_id, cover_url, tmdb_release, existing_release,
-                        log_title, tmdb_id, media_type, True, True,
+                        log_title, tmdb_id, media_type, True, (not is_drive_skip_mode()),
                         force_meta=True, props=props, season_number=season_number,
                         is_refresh=True,
                     )
@@ -4544,8 +4651,14 @@ if mode == "データ管理":
             with stat_c2:
                 st.caption(f"Notionカバー: {'🟢' if notion_ok_now else '🔴'}")
             with stat_c3:
-                st.caption(f"Drive画像: {'🟢' if drive_ok_now else '🔴'}")
-            st.caption("🟢=登録済 / 🔴=未登録")
+                if is_drive_skip_mode():
+                    st.caption("Drive画像: ⏭ スキップ中")
+                else:
+                    st.caption(f"Drive画像: {'🟢' if drive_ok_now else '🔴'}")
+            if is_drive_skip_mode():
+                st.caption("🟢=登録済 / 🔴=未登録 / ⏭=スキップ中")
+            else:
+                st.caption("🟢=登録済 / 🔴=未登録")
             if st.button("🔄 このページをリフレッシュ", key=f"refresh_one_{page_id}"):
                 with st.spinner("リフレッシュ中..."):
                     ok, msg = run_single_refresh()
@@ -4619,6 +4732,27 @@ if mode == "データ管理":
             title_c1, title_c2 = st.columns(2)
             new_jp = clearable_text_input("日本語タイトル", f"edit_jp_{page_id}", value=existing_jp, container=title_c1)
             new_en = clearable_text_input("英語タイトル",   f"edit_en_{page_id}", value=existing_en, container=title_c2)
+            if page_media == "演奏曲":
+                cand_key = f"score_title_cands_{page_id}"
+                if cand_key not in st.session_state:
+                    st.session_state[cand_key] = []
+                c_search, c_pick, c_apply = st.columns([1.2, 2.8, 1.2])
+                if c_search.button("候補検索", key=f"score_title_search_{page_id}"):
+                    with st.spinner("MusicBrainzで候補検索中..."):
+                        cands, err = search_mb_works_by_title(new_jp or new_en or existing_jp or existing_en, limit=12)
+                    if err:
+                        st.warning(f"候補検索失敗: {err}")
+                    st.session_state[cand_key] = cands
+                cands = st.session_state.get(cand_key, [])
+                if cands:
+                    options = [f"{c['title']}" + (f" ({c['disambiguation']})" if c.get("disambiguation") else "") for c in cands]
+                    picked = c_pick.selectbox("検索候補", options, key=f"score_title_pick_{page_id}")
+                    if c_apply.button("候補を反映", key=f"score_title_apply_{page_id}"):
+                        sel = cands[options.index(picked)]
+                        st.session_state[f"_cti_edit_jp_{page_id}"] = sel.get("title", "")
+                        st.session_state[f"_cti_edit_en_{page_id}"] = sel.get("title", "")
+                        st.success("タイトル欄に反映しました")
+                        st.rerun()
 
             # リリース日編集（全媒体）
             existing_release_edit = ((props.get("リリース日") or {}).get("date") or {}).get("start", "") or ""
@@ -4709,6 +4843,11 @@ if mode == "データ管理":
                                 new_id = st.session_state.get("last_created_page_id")
                                 _add_score_page_cache(new_id, new_title)
                                 add_rel(new_id, new_title)
+                                sync_notion_after_update(
+                                    page_id=new_id,
+                                    updated_page=st.session_state.get("last_created_page"),
+                                )
+                                _focus_management_page(new_id, new_title)
                                 st.success("✅ 演奏曲を追加しました")
                                 st.rerun()
                         else:
@@ -4725,6 +4864,11 @@ if mode == "データ管理":
                                 new_id = st.session_state.get("last_created_page_id")
                                 _add_performance_page_cache(new_id, new_title)
                                 add_rel(new_id, new_title)
+                                sync_notion_after_update(
+                                    page_id=new_id,
+                                    updated_page=st.session_state.get("last_created_page"),
+                                )
+                                _focus_management_page(new_id, new_title)
                                 st.success("✅ 演奏会（出演）を追加しました")
                                 st.rerun()
 
@@ -5028,7 +5172,7 @@ if mode == "データ管理":
                                       existing_release = date_prop.get("start") if date_prop else None
                                       media_type       = cand.get("media_type", "movie")
                                       season_number    = get_season_number(props)
-                                      need_notion, need_drive = True, True
+                                      need_notion, need_drive = True, (not is_drive_skip_mode())
                                       st.session_state.tmdb_id_cache[page_id] = tmdb_id
                                       n_ok, d_ok, meta_ok, updated = update_all(
                                           page_id, cover_url, tmdb_release, existing_release,
@@ -5181,6 +5325,3 @@ if mode == "データ管理":
                                                     st.rerun()
                                                 else:
                                                     st.error("❌ 一部更新に失敗しました")
-
-
-
