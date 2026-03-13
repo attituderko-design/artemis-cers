@@ -46,3 +46,6 @@ streamlit run app.py
 
 必要なSecretsは `.streamlit/secrets.toml` に設定してください。
 
+---
+
+> _ArtéMis — named after the goddess of the hunt and the moon. She keeps track of everything you've ever experienced._
