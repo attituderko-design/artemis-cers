@@ -31,7 +31,7 @@ NOTION_HEADERS = {
 
 DEFAULT_TIMEOUT = 20
 REFRESH_BATCH_SIZE = 20
-APP_VERSION = "6.01"
+APP_VERSION = "6.02"
 
 # ============================================================
 # 媒体マッピング
@@ -63,6 +63,15 @@ def get_asset_path_or_url(filename: str) -> str:
     if local_path.exists():
         return str(local_path)
     return f"{ASSET_BASE_URL}/{filename}"
+
+def load_user_guide_markdown() -> str:
+    guide_path = Path(__file__).parent / "docs" / "USER_GUIDE.md"
+    if not guide_path.exists():
+        return ""
+    try:
+        return guide_path.read_text(encoding="utf-8")
+    except Exception:
+        return ""
 
 def format_cover_url(url: str, max_len: int = 90) -> str:
     if not url:
@@ -1526,6 +1535,9 @@ def search_albums(query: str, artist: str = None) -> list:
 
 def search_itunes_jp_album_title(title: str, artist: str = None) -> str:
     """iTunesで日本語タイトル候補を検索（見つからなければ空文字）"""
+    def _has_japanese(text: str) -> bool:
+        return bool(re.search(r"[\u3040-\u30ff\u4e00-\u9fff]", text or ""))
+
     search_term = " ".join(filter(None, [artist, title])).strip()
     if not search_term:
         return ""
@@ -1548,7 +1560,24 @@ def search_itunes_jp_album_title(title: str, artist: str = None) -> str:
         items = res.json().get("results", [])
         if not items:
             return ""
-        return items[0].get("collectionName", "") or ""
+        # まずアーティスト一致候補を優先
+        scoped = items
+        if artist:
+            artist_l = artist.strip().lower()
+            matched = [x for x in items if artist_l and artist_l in (x.get("artistName", "").lower())]
+            if matched:
+                scoped = matched
+        # 日本語を含むタイトルを優先
+        for x in scoped:
+            name = x.get("collectionName", "") or ""
+            if name and _has_japanese(name):
+                return name
+        # 次点: 非空の先頭候補
+        for x in scoped:
+            name = x.get("collectionName", "") or ""
+            if name:
+                return name
+        return ""
     except Exception:
         return ""
 
@@ -2301,8 +2330,8 @@ def _focus_management_page(page_id: str, title: str):
         return
     st.session_state.focus_page_id = page_id
     st.session_state.manual_page = 0
-    st.session_state["_cti_manual_search_query"] = title or ""
-    st.session_state["manual_search_query"] = title or ""
+    # manual_search_query(widget key) は生成後に直接更新できないため、次runで反映する
+    st.session_state["pending_manual_search_query"] = title or ""
 
 def check_duplicate(tmdb_id: int, pages: list) -> list:
     """TMDB_IDが一致する既存ページを返す"""
@@ -2396,6 +2425,13 @@ for key, default in {
 # ============================================================
 with st.sidebar:
     st.header("操作パネル")
+    with st.expander("📘 操作ガイド", expanded=False):
+        guide_md = load_user_guide_markdown()
+        if guide_md:
+            st.markdown(guide_md)
+        else:
+            st.info("`docs/USER_GUIDE.md` が見つかりません。")
+        st.markdown("[GitHubで見る](https://github.com/attituderko-design/artemis-cers/blob/main/docs/USER_GUIDE.md)")
 
     st.divider()
     st.toggle("Driveデータスキップ機能ON", key="drive_skip_mode")
@@ -3526,6 +3562,9 @@ if mode == "新規登録":
                         can_jp_search = media_label in ("映画", "ドラマ", "アニメ", "音楽アルバム", "ゲーム")
                         jp_search_clicked = st.button("日本語タイトルを検索", key="search_jp_title", disabled=not can_jp_search)
                     final_en = clearable_text_input("英語タイトル（修正可）", "final_en", value=reg["cand_en"])
+                    jp_feedback = st.session_state.pop("jp_search_feedback", "")
+                    if jp_feedback:
+                        st.info(jp_feedback)
                     if media_label in ("書籍", "漫画"):
                         final_isbn = st.text_input("ISBN", value=reg.get("isbn", ""), key="final_isbn")
                     else:
@@ -3550,13 +3589,21 @@ if mode == "新規登録":
                                 authors = reg.get("book_authors") or []
                                 artist = authors[0] if authors else None
                                 new_jp = search_itunes_jp_album_title(title, artist)
+                                if not new_jp:
+                                    new_jp = search_wikipedia_jp_title(f"{title} album")
                             elif media_label == "ゲーム":
                                 title = reg.get("cand_en") or reg.get("jp_input") or ""
                                 new_jp = search_wikipedia_jp_title(title)
-    
+
                             if new_jp:
-                                st.session_state.final_jp_next = new_jp
-                                st.rerun()
+                                current_jp = (reg.get("jp_input") or "").strip()
+                                if current_jp and new_jp.strip() == current_jp:
+                                    st.session_state.jp_search_feedback = "日本語タイトル候補は現在値と同じでした"
+                                    st.rerun()
+                                else:
+                                    st.session_state.final_jp_next = new_jp
+                                    st.session_state.jp_search_feedback = f"日本語タイトル候補を反映しました: {new_jp}"
+                                    st.rerun()
                             else:
                                 st.warning("日本語タイトルが見つかりませんでした")
     
@@ -4515,6 +4562,9 @@ if mode == "データ管理":
     st.subheader(f"🗂 データ管理　表示: {len(display_pages)} 件 / 全 {len(target_pages)} 件")
     if diff_filter != "フィルタなし":
         st.caption(f"差分フィルタ適用中: {diff_filter}")
+    if "pending_manual_search_query" in st.session_state:
+        pending_q = st.session_state.pop("pending_manual_search_query", "")
+        st.session_state["_cti_manual_search_query"] = pending_q
 
     search_query = clearable_text_input(
         "🔎 タイトルで絞り込む", "manual_search_query",
@@ -5325,3 +5375,6 @@ if mode == "データ管理":
                                                     st.rerun()
                                                 else:
                                                     st.error("❌ 一部更新に失敗しました")
+
+
+
