@@ -35,7 +35,7 @@ NOTION_HEADERS = {
 
 DEFAULT_TIMEOUT = 20
 REFRESH_BATCH_SIZE = 20
-APP_VERSION = "7.35"
+APP_VERSION = "7.37"
 
 # ============================================================
 # 媒体マッピング
@@ -2322,35 +2322,6 @@ def _put_notion_prop(properties: dict, type_map: dict, name: str, value):
 def _split_instruments(part: str) -> list[str]:
     return [x.strip() for x in re.split(r'[/／,、・\s]+', part or "") if x.strip()]
 
-def _find_or_create_performer_id(name: str) -> str | None:
-    performer_name = (name or "").strip()
-    if not performer_name or not NOTION_PERFORMER_DB_ID:
-        return None
-    res = api_request(
-        "post",
-        f"https://api.notion.com/v1/databases/{NOTION_PERFORMER_DB_ID}/query",
-        headers=NOTION_HEADERS,
-        json={"filter": {"property": "名前", "title": {"equals": performer_name}}, "page_size": 1},
-    )
-    if res is not None and res.status_code == 200:
-        rows = (res.json() or {}).get("results", [])
-        if rows:
-            return rows[0].get("id")
-    props = get_notion_db_property_types(NOTION_PERFORMER_DB_ID)
-    payload_props = {}
-    _put_notion_prop(payload_props, props, "名前", performer_name)
-    if not payload_props:
-        return None
-    cres = api_request(
-        "post",
-        "https://api.notion.com/v1/pages",
-        headers=NOTION_HEADERS,
-        json={"parent": {"database_id": NOTION_PERFORMER_DB_ID}, "properties": payload_props},
-    )
-    if cres is not None and cres.status_code == 200:
-        return (cres.json() or {}).get("id")
-    return None
-
 def create_setlist_rows_for_performance(
     performance_page_id: str,
     performance_title: str,
@@ -2359,12 +2330,12 @@ def create_setlist_rows_for_performance(
     encore_items: list[dict],
     selected_scores: list[dict],
     score_pages: list[dict],
-) -> tuple[int, int, int, int, str]:
+) -> tuple[int, int, str]:
     if not NOTION_SCORE_DB_ID:
-        return 0, 0, 0, 0, "NOTION_SCORE_DB_ID 未設定"
+        return 0, 0, "NOTION_SCORE_DB_ID 未設定"
     type_map = get_notion_db_property_types(NOTION_SCORE_DB_ID)
     if not type_map:
-        return 0, 0, 0, 0, "演奏曲DBのプロパティ取得失敗（Integration接続/DB IDを確認）"
+        return 0, 0, "演奏曲DBのプロパティ取得失敗（Integration接続/DB IDを確認）"
 
     title_to_id = {}
     for s in (selected_scores or []):
@@ -2374,13 +2345,9 @@ def create_setlist_rows_for_performance(
             title_to_id[t] = sid
 
     created, failed = 0, 0
-    created_assign, failed_assign = 0, 0
     rows = [("本編", x) for x in (main_items or [])] + [("Encore", x) for x in (encore_items or [])]
     if not rows:
-        return 0, 0, 0, 0, "セットリスト入力なし"
-    performer_name = (st.session_state.get("ev_self_name") or DEFAULT_PERFORMER_NAME or "").strip()
-    performer_id = _find_or_create_performer_id(performer_name) if performer_name else None
-    assign_type_map = get_notion_db_property_types(NOTION_ASSIGNMENT_DB_ID) if NOTION_ASSIGNMENT_DB_ID else {}
+        return 0, 0, "セットリスト入力なし"
 
     order = 1
     for section, item in rows:
@@ -2388,7 +2355,7 @@ def create_setlist_rows_for_performance(
         if not song_title:
             continue
         part = (item.get("part") or "").strip()
-        played = bool(item.get("played", False))
+        played = bool(item.get("played", False) or part)
         score_id = title_to_id.get(song_title.lower())
         if not score_id:
             found = _find_score_page_by_title(score_pages or [], song_title)
@@ -2399,6 +2366,7 @@ def create_setlist_rows_for_performance(
         _put_notion_prop(props, type_map, "出演", performance_page_id)
         _put_notion_prop(props, type_map, "出演日", performance_date)
         _put_notion_prop(props, type_map, "区分", section)
+        _put_notion_prop(props, type_map, "担当楽器", _split_instruments(part) if played else [])
         _put_notion_prop(props, type_map, "曲順", order)
         _put_notion_prop(props, type_map, "演奏曲", score_id)
         _put_notion_prop(props, type_map, "表示名", f"{performance_title} / {order:02d} / {section} / {song_title}")
@@ -2411,35 +2379,10 @@ def create_setlist_rows_for_performance(
         res = api_request("post", "https://api.notion.com/v1/pages", headers=NOTION_HEADERS, json=payload)
         if res is not None and res.status_code == 200:
             created += 1
-            score_row_id = (res.json() or {}).get("id")
-            if played and NOTION_ASSIGNMENT_DB_ID:
-                if not score_row_id or not performer_id:
-                    failed_assign += 1
-                else:
-                    a_props = {}
-                    _put_notion_prop(a_props, assign_type_map, "タイトル", f"{performance_title} / {order:02d} / {performer_name or '出演者'}")
-                    _put_notion_prop(a_props, assign_type_map, "演奏曲", score_row_id)
-                    _put_notion_prop(a_props, assign_type_map, "出演者", performer_id)
-                    _put_notion_prop(a_props, assign_type_map, "担当楽器", _split_instruments(part))
-                    if a_props:
-                        a_res = api_request(
-                            "post",
-                            "https://api.notion.com/v1/pages",
-                            headers=NOTION_HEADERS,
-                            json={"parent": {"database_id": NOTION_ASSIGNMENT_DB_ID}, "properties": a_props},
-                        )
-                        if a_res is not None and a_res.status_code == 200:
-                            created_assign += 1
-                        else:
-                            failed_assign += 1
-                    else:
-                        failed_assign += 1
         else:
             failed += 1
         order += 1
-    if NOTION_ASSIGNMENT_DB_ID and not performer_id and any(bool(x.get("played", False)) for _, x in rows):
-        return created, failed, created_assign, failed_assign, "演奏担当DB: 自分の出演者名（ev_self_name/DEFAULT_PERFORMER_NAME）未設定"
-    return created, failed, created_assign, failed_assign, ""
+    return created, failed, ""
 
 def is_japanese_name(name: str) -> bool:
     """漢字・ひらがな・カタカナを含む場合は日本語著者名とみなす"""
@@ -3155,13 +3098,6 @@ if mode == "新規登録":
                 st.divider()
                 MAX_MAIN   = 25
                 MAX_ENCORE = 5
-                if is_performance:
-                    st.text_input(
-                        "自分の出演者名（出演者DBの名前）",
-                        key="ev_self_name",
-                        value=st.session_state.get("ev_self_name", DEFAULT_PERFORMER_NAME),
-                        placeholder="例: Yuta Kita",
-                    )
 
                 # セッションステート構造: [{"title": "曲名", "part": "Vn.", "played": True}]
                 def render_song_list(slot_key, max_count, label):
@@ -3177,7 +3113,7 @@ if mode == "新規登録":
                         c_num.markdown(f"**{i+1}.**")
                         t = c_inp.text_input("", value=item["title"], key=f"{slot_key}_t_{i}", label_visibility="collapsed")
                         if is_performance:
-                            played = c_play.checkbox("演奏", value=bool(item.get("played", False)), key=f"{slot_key}_played_{i}", label_visibility="collapsed")
+                            played = c_play.checkbox("演奏", value=bool(item.get("played", True)), key=f"{slot_key}_played_{i}", label_visibility="collapsed")
                             p = c_part.text_input("", value=item.get("part", ""), key=f"{slot_key}_p_{i}", placeholder="担当楽器", label_visibility="collapsed")
                         else:
                             played = False
@@ -3192,7 +3128,7 @@ if mode == "新規登録":
                     last_empty = new_list and not new_list[-1]["title"].strip()
                     if len(filled) < max_count and not last_empty:
                         if st.button(f"＋ 曲を追加", key=f"{slot_key}_add"):
-                            st.session_state[slot_key] = filled + [{"title": "", "part": "", "played": False}]
+                            st.session_state[slot_key] = filled + [{"title": "", "part": "", "played": True}]
                             st.rerun()
 
                 def add_songs_to_slot(slot_key, titles, max_count):
@@ -3200,7 +3136,7 @@ if mode == "新規登録":
                     current = [x for x in st.session_state[slot_key] if x["title"].strip()]
                     for title in titles:
                         if len(current) < max_count and title not in [x["title"] for x in current]:
-                            current.append({"title": title, "part": "", "played": False})
+                            current.append({"title": title, "part": "", "played": True})
                     st.session_state[slot_key] = current
 
                 # ── 通常セットリスト ──
@@ -3460,7 +3396,6 @@ if mode == "新規登録":
                 )
                 if ok:
                     created_setlist = failed_setlist = 0
-                    created_assign = failed_assign = 0
                     setlist_reason = ""
                     if is_performance and NOTION_SCORE_DB_ID:
                         setlist_main = [x for x in st.session_state.get("ev_setlist_main", []) if (x.get("title") or "").strip()]
@@ -3470,7 +3405,7 @@ if mode == "新規登録":
                             perf_date = watch_str or start_str or ""
                             score_pages_for_link = _get_score_pages()
                             selected_scores_for_link = st.session_state.get("ev_score_selected", [])
-                            created_setlist, failed_setlist, created_assign, failed_assign, setlist_reason = create_setlist_rows_for_performance(
+                            created_setlist, failed_setlist, setlist_reason = create_setlist_rows_for_performance(
                                 performance_page_id=perf_page_id,
                                 performance_title=event_title,
                                 performance_date=perf_date,
@@ -3498,13 +3433,6 @@ if mode == "新規登録":
                             st.warning(f"⚠️ 演奏曲DB登録に失敗しました（{failed_setlist} 件）")
                         elif setlist_reason:
                             st.info(f"ℹ️ 演奏曲DB連携: {setlist_reason}")
-                        if NOTION_ASSIGNMENT_DB_ID:
-                            if created_assign > 0 and failed_assign == 0:
-                                st.success(f"✅ 演奏担当DBに {created_assign} 件登録しました")
-                            elif created_assign > 0 and failed_assign > 0:
-                                st.warning(f"⚠️ 演奏担当DB登録: 成功 {created_assign} 件 / 失敗 {failed_assign} 件")
-                            elif failed_assign > 0:
-                                st.warning(f"⚠️ 演奏担当DB登録に失敗しました（{failed_assign} 件）")
                     show_post_register_ui()
                 else:
                     st.error("❌ 登録失敗")
