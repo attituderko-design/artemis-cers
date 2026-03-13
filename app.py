@@ -31,7 +31,7 @@ NOTION_HEADERS = {
 
 DEFAULT_TIMEOUT = 20
 REFRESH_BATCH_SIZE = 20
-APP_VERSION = "7.04"
+APP_VERSION = "7.05"
 
 # ============================================================
 # 媒体マッピング
@@ -2390,6 +2390,7 @@ def _focus_management_page(page_id: str, title: str, media_label: str | None = N
     if not page_id:
         return
     st.session_state.focus_page_id = page_id
+    st.session_state.pending_focus_page_id = page_id
     st.session_state.manual_page = 0
     # manual_search_query(widget key) は生成後に直接更新できないため、次runで反映する
     st.session_state["pending_manual_search_query"] = title or ""
@@ -2443,6 +2444,8 @@ st.markdown(
 st.caption(f"v{APP_VERSION}")
 if is_drive_skip_mode():
     st.info("⏭ Driveデータスキップ機能ON: Drive保存/照合はスキップして動作中です。")
+if "pending_notice" in st.session_state:
+    st.success(st.session_state.pop("pending_notice"))
 
 for key, default in {
     "is_running":         False,
@@ -2585,6 +2588,9 @@ with st.sidebar:
 
         st.divider()
         st.header("動作モード")
+        if st.session_state.get("pending_focus_page_id"):
+            st.session_state.app_mode = "データ管理"
+            st.session_state.app_mode_widget = "データ管理"
         if "pending_app_mode" in st.session_state:
             st.session_state.app_mode = st.session_state.pop("pending_app_mode")
             st.session_state.app_mode_widget = st.session_state.app_mode
@@ -3477,6 +3483,7 @@ if mode == "新規登録":
                                     )
                                 if ok:
                                     new_id = st.session_state.get("last_created_page_id")
+                                    upsert_page_in_state(st.session_state.get("last_created_page"))
                                     _add_performance_page_cache(new_id, new_title)
                                     add_selected_perf(new_id, new_title)
                                     sync_notion_after_update(
@@ -3485,7 +3492,7 @@ if mode == "新規登録":
                                     )
                                     _focus_management_page(new_id, new_title, "出演")
                                     st.session_state.pending_app_mode = "データ管理"
-                                    st.success("✅ 出演データを追加しました")
+                                    st.session_state.pending_notice = "✅ 出演データを追加しました（詳細編集を開きます）"
                                     st.rerun()
                                 else:
                                     st.error("❌ 出演データの作成に失敗しました")
@@ -4683,6 +4690,9 @@ if mode == "自動同期" and st.session_state.is_running:
 # ============================================================
 if mode == "データ管理":
     display_pages = get_display_pages()
+    pending_focus_id = st.session_state.pop("pending_focus_page_id", None)
+    if pending_focus_id:
+        st.session_state.focus_page_id = pending_focus_id
     focus_id = st.session_state.get("focus_page_id")
     if focus_id:
         display_pages = sorted(display_pages, key=lambda p: 0 if p.get("id") == focus_id else 1)
@@ -5062,6 +5072,7 @@ if mode == "データ管理":
                             )
                             if ok:
                                 new_id = st.session_state.get("last_created_page_id")
+                                upsert_page_in_state(st.session_state.get("last_created_page"))
                                 _add_score_page_cache(new_id, new_title)
                                 add_rel(new_id, new_title)
                                 if persist_relations():
@@ -5071,7 +5082,7 @@ if mode == "データ管理":
                                     updated_page=st.session_state.get("last_created_page"),
                                 )
                                 _focus_management_page(new_id, new_title, "演奏曲")
-                                st.success("✅ 演奏曲を追加しました")
+                                st.session_state.pending_notice = "✅ 演奏曲を追加しました（詳細編集を開きます）"
                                 st.rerun()
                         else:
                             ok = create_notion_page(
@@ -5084,6 +5095,7 @@ if mode == "データ管理":
                             )
                             if ok:
                                 new_id = st.session_state.get("last_created_page_id")
+                                upsert_page_in_state(st.session_state.get("last_created_page"))
                                 _add_performance_page_cache(new_id, new_title)
                                 add_rel(new_id, new_title)
                                 if persist_relations():
@@ -5093,7 +5105,7 @@ if mode == "データ管理":
                                     updated_page=st.session_state.get("last_created_page"),
                                 )
                                 _focus_management_page(new_id, new_title, "出演")
-                                st.success("✅ 出演データを追加しました")
+                                st.session_state.pending_notice = "✅ 出演データを追加しました（詳細編集を開きます）"
                                 st.rerun()
 
                 if st.session_state[rel_state_key]:
