@@ -2,6 +2,7 @@ import re
 import requests
 import time
 import streamlit as st
+from collections import defaultdict
 from datetime import date, datetime
 from pathlib import Path
 from urllib.parse import quote, unquote, urlparse
@@ -21,6 +22,7 @@ NOTION_SCORE_DB_ID = st.secrets.get("NOTION_SCORE_DB_ID", st.secrets.get("NOTION
 NOTION_PERFORMER_DB_ID = st.secrets.get("NOTION_PERFORMER_DB_ID", "")
 NOTION_PERFORMANCE_CAST_DB_ID = st.secrets.get("NOTION_PERFORMANCE_CAST_DB_ID", st.secrets.get("NOTION_ASSIGNMENT_DB_ID", ""))
 NOTION_SONG_ASSIGN_DB_ID = st.secrets.get("NOTION_SONG_ASSIGN_DB_ID", "")
+NOTION_PERFORMER_MASTER_DB_ID = st.secrets.get("NOTION_PERFORMER_MASTER_DB_ID", "")
 DEFAULT_PERFORMER_NAME = st.secrets.get("DEFAULT_PERFORMER_NAME", "")
 TMDB_API_KEY         = st.secrets["TMDB_API_KEY"]
 RAKUTEN_APP_ID = st.secrets.get("RAKUTEN_APP_ID", "")
@@ -36,7 +38,7 @@ NOTION_HEADERS = {
 
 DEFAULT_TIMEOUT = 20
 REFRESH_BATCH_SIZE = 20
-APP_VERSION = "7.42"
+APP_VERSION = "8.00"
 
 # ============================================================
 # 媒体マッピング
@@ -659,6 +661,24 @@ def load_notion_data() -> list:
         data = res.json()
         all_results.extend(data.get("results", []))
         has_more    = data.get("has_more", False)
+        next_cursor = data.get("next_cursor")
+    return all_results
+
+def query_notion_database_all(database_id: str) -> list:
+    if not database_id:
+        return []
+    url = f"https://api.notion.com/v1/databases/{database_id}/query"
+    all_results, has_more, next_cursor = [], True, None
+    while has_more:
+        payload = {"page_size": 100}
+        if next_cursor:
+            payload["start_cursor"] = next_cursor
+        res = api_request("post", url, headers=NOTION_HEADERS, json=payload)
+        if res is None or res.status_code != 200:
+            return all_results
+        data = res.json()
+        all_results.extend(data.get("results", []))
+        has_more = data.get("has_more", False)
         next_cursor = data.get("next_cursor")
     return all_results
 
@@ -2356,6 +2376,74 @@ def _find_or_create_performer_id(name: str) -> str | None:
         return (cres.json() or {}).get("id")
     return None
 
+def _extract_name_title(page: dict) -> str:
+    props = (page or {}).get("properties", {})
+    for key in ("名前", "タイトル", "Name"):
+        p = props.get(key, {})
+        if (p.get("type") == "title") or ("title" in p):
+            txt = plain_text_join((p or {}).get("title", []))
+            if txt.strip():
+                return txt.strip()
+    return ""
+
+def get_performer_master_names() -> list[str]:
+    dbid = NOTION_PERFORMER_MASTER_DB_ID or NOTION_PERFORMER_DB_ID
+    pages = query_notion_database_all(dbid)
+    names = []
+    for pg in pages:
+        nm = _extract_name_title(pg)
+        if nm:
+            names.append(nm)
+    # preserve order while unique
+    seen = set()
+    out = []
+    for n in names:
+        k = _normalize_person_name(n)
+        if k in seen:
+            continue
+        seen.add(k)
+        out.append(n)
+    return out
+
+def sync_performer_master_from_performer_db() -> tuple[int, int, str]:
+    if not NOTION_PERFORMER_MASTER_DB_ID:
+        return 0, 0, "NOTION_PERFORMER_MASTER_DB_ID 未設定"
+    src_pages = query_notion_database_all(NOTION_PERFORMER_DB_ID)
+    dst_pages = query_notion_database_all(NOTION_PERFORMER_MASTER_DB_ID)
+    src_names = []
+    for pg in src_pages:
+        nm = _extract_name_title(pg)
+        if nm:
+            src_names.append(nm)
+    dst_keys = {_normalize_person_name(_extract_name_title(pg)) for pg in dst_pages if _extract_name_title(pg)}
+    type_map = get_notion_db_property_types(NOTION_PERFORMER_MASTER_DB_ID)
+    created = 0
+    skipped = 0
+    for nm in src_names:
+        key = _normalize_person_name(nm)
+        if not key or key in dst_keys:
+            skipped += 1
+            continue
+        props = {}
+        _put_notion_prop(props, type_map, "名前", nm)
+        _put_notion_prop(props, type_map, "タイトル", nm)
+        _put_notion_prop(props, type_map, "Name", nm)
+        if not props:
+            skipped += 1
+            continue
+        res = api_request(
+            "post",
+            "https://api.notion.com/v1/pages",
+            headers=NOTION_HEADERS,
+            json={"parent": {"database_id": NOTION_PERFORMER_MASTER_DB_ID}, "properties": props},
+        )
+        if res is not None and res.status_code == 200:
+            created += 1
+            dst_keys.add(key)
+        else:
+            skipped += 1
+    return created, skipped, ""
+
 def create_performance_participant_rows(
     performance_page_id: str,
     performance_title: str,
@@ -2366,6 +2454,17 @@ def create_performance_participant_rows(
     type_map = get_notion_db_property_types(NOTION_PERFORMANCE_CAST_DB_ID)
     if not type_map:
         return 0, 0, "演奏会参加者DBのプロパティ取得失敗（Integration接続/DB IDを確認）", {}
+    relation_props = [k for k, v in type_map.items() if v == "relation"]
+    perf_rel_prop = next((k for k in ["出演", "演奏会", "公演"] if type_map.get(k) == "relation"), None)
+    perf_rel_prop = perf_rel_prop or (relation_props[0] if relation_props else None)
+    performer_rel_prop = next((k for k in ["出演者", "奏者", "演奏者"] if type_map.get(k) == "relation"), None)
+    if performer_rel_prop is None and relation_props:
+        performer_rel_prop = relation_props[1] if len(relation_props) >= 2 and relation_props[0] == perf_rel_prop else relation_props[0]
+    inst_prop = "担当楽器" if type_map.get("担当楽器") in ("multi_select", "select") else None
+    memo_prop = "メモ" if type_map.get("メモ") == "rich_text" else None
+    title_prop = "タイトル" if type_map.get("タイトル") == "title" else ("Name" if type_map.get("Name") == "title" else None)
+    display_prop = "表示名" if type_map.get("表示名") in ("rich_text", "formula") else None
+
     rows = [x for x in (participants or []) if (x.get("name") or "").strip()]
     if not rows:
         return 0, 0, "参加者入力なし", {}
@@ -2378,6 +2477,25 @@ def create_performance_participant_rows(
         seen_names.add(key)
         unique_rows.append(r)
     rows = unique_rows
+    existing_performer_ids = set()
+    if perf_rel_prop and performer_rel_prop:
+        q = {
+            "filter": {"property": perf_rel_prop, "relation": {"contains": performance_page_id}},
+            "page_size": 100,
+        }
+        res = api_request(
+            "post",
+            f"https://api.notion.com/v1/databases/{NOTION_PERFORMANCE_CAST_DB_ID}/query",
+            headers=NOTION_HEADERS,
+            json=q,
+        )
+        if res is not None and res.status_code == 200:
+            for pg in (res.json() or {}).get("results", []):
+                rels = (((pg.get("properties", {}) or {}).get(performer_rel_prop) or {}).get("relation", []))
+                for r in rels:
+                    rid = r.get("id")
+                    if rid:
+                        existing_performer_ids.add(rid)
 
     created, failed = 0, 0
     cast_row_map = {}
@@ -2389,14 +2507,22 @@ def create_performance_participant_rows(
         if not performer_id:
             failed += 1
             continue
+        if performer_id in existing_performer_ids:
+            continue
 
         props = {}
-        _put_notion_prop(props, type_map, "タイトル", f"{performance_title} / {name}")
-        _put_notion_prop(props, type_map, "出演", performance_page_id)
-        _put_notion_prop(props, type_map, "出演者", performer_id)
-        _put_notion_prop(props, type_map, "担当楽器", instruments)
-        _put_notion_prop(props, type_map, "メモ", memo)
-        _put_notion_prop(props, type_map, "表示名", f"{i:02d} / {name}")
+        if title_prop:
+            _put_notion_prop(props, type_map, title_prop, f"{performance_title} / {name}")
+        if perf_rel_prop:
+            _put_notion_prop(props, type_map, perf_rel_prop, performance_page_id)
+        if performer_rel_prop:
+            _put_notion_prop(props, type_map, performer_rel_prop, performer_id)
+        if inst_prop:
+            _put_notion_prop(props, type_map, inst_prop, instruments)
+        if memo_prop:
+            _put_notion_prop(props, type_map, memo_prop, memo)
+        if display_prop:
+            _put_notion_prop(props, type_map, display_prop, f"{i:02d} / {name}")
 
         if not props:
             failed += 1
@@ -2412,6 +2538,7 @@ def create_performance_participant_rows(
             cast_row_id = (res.json() or {}).get("id")
             if cast_row_id:
                 cast_row_map[_normalize_person_name(name)] = cast_row_id
+            existing_performer_ids.add(performer_id)
         else:
             failed += 1
     return created, failed, "", cast_row_map
@@ -2564,6 +2691,301 @@ def create_song_assignment_rows(
             else:
                 failed += 1
     return created, failed, ""
+
+def _pick_prop_name(type_map: dict, candidates: list[str], p_type: str) -> str | None:
+    for c in candidates:
+        if type_map.get(c) == p_type:
+            return c
+    return None
+
+def _extract_relation_ids(props: dict, prop_name: str | None) -> list[str]:
+    if not prop_name:
+        return []
+    rel = ((props.get(prop_name) or {}).get("relation") or [])
+    out = []
+    for r in rel:
+        rid = r.get("id")
+        if rid:
+            out.append(rid)
+    return out
+
+def _extract_page_title_by_type(props: dict, type_map: dict, fallbacks: list[str]) -> str:
+    for key in fallbacks:
+        if type_map.get(key) == "title":
+            return plain_text_join((props.get(key) or {}).get("title", []))
+    for k, v in (type_map or {}).items():
+        if v == "title":
+            return plain_text_join((props.get(k) or {}).get("title", []))
+    return ""
+
+def _tail_person_name(text: str) -> str:
+    parts = [x.strip() for x in (text or "").split("/") if x.strip()]
+    return parts[-1] if parts else ""
+
+def analyze_performance_relation_integrity(force_refresh: bool = False) -> dict:
+    if not NOTION_PERFORMANCE_CAST_DB_ID:
+        return {"error": "NOTION_PERFORMANCE_CAST_DB_ID 未設定"}
+    perf_pages = _get_performance_pages(force_refresh=force_refresh)
+    perf_title_by_id = {p.get("id"): (p.get("title") or "") for p in perf_pages if p.get("id")}
+
+    cast_rows = query_notion_database_all(NOTION_PERFORMANCE_CAST_DB_ID)
+    score_rows = query_notion_database_all(NOTION_SCORE_DB_ID) if NOTION_SCORE_DB_ID else []
+    assign_rows = query_notion_database_all(NOTION_SONG_ASSIGN_DB_ID) if NOTION_SONG_ASSIGN_DB_ID else []
+    performer_rows = query_notion_database_all(NOTION_PERFORMER_DB_ID) if NOTION_PERFORMER_DB_ID else []
+
+    cast_type = get_notion_db_property_types(NOTION_PERFORMANCE_CAST_DB_ID)
+    score_type = get_notion_db_property_types(NOTION_SCORE_DB_ID) if NOTION_SCORE_DB_ID else {}
+    assign_type = get_notion_db_property_types(NOTION_SONG_ASSIGN_DB_ID) if NOTION_SONG_ASSIGN_DB_ID else {}
+    performer_type = get_notion_db_property_types(NOTION_PERFORMER_DB_ID) if NOTION_PERFORMER_DB_ID else {}
+
+    cast_rel_props = [k for k, v in cast_type.items() if v == "relation"]
+    cast_perf_prop = _pick_prop_name(cast_type, ["出演", "演奏会", "公演"], "relation")
+    cast_perf_prop = cast_perf_prop or (cast_rel_props[0] if cast_rel_props else None)
+    cast_performer_prop = _pick_prop_name(cast_type, ["出演者", "奏者", "演奏者"], "relation")
+    if cast_performer_prop is None and cast_rel_props:
+        cast_performer_prop = cast_rel_props[1] if len(cast_rel_props) >= 2 and cast_rel_props[0] == cast_perf_prop else cast_rel_props[0]
+
+    cast_title_prop = _pick_prop_name(cast_type, ["タイトル", "Name", "名前"], "title")
+    score_perf_prop = _pick_prop_name(score_type, ["出演", "演奏会", "公演"], "relation")
+    if score_perf_prop is None:
+        rels = [k for k, v in score_type.items() if v == "relation"]
+        score_perf_prop = rels[0] if rels else None
+    assign_score_prop = _pick_prop_name(assign_type, ["演奏曲", "演奏曲DB", "曲", "楽曲"], "relation")
+    assign_cast_prop = _pick_prop_name(assign_type, ["演奏会出演者", "出演者", "参加者", "演奏会参加者"], "relation")
+    assign_title_prop = _pick_prop_name(assign_type, ["タイトル", "Name", "名前"], "title")
+    assign_rel_props = [k for k, v in assign_type.items() if v == "relation"]
+    if assign_score_prop is None and assign_rel_props:
+        assign_score_prop = assign_rel_props[0]
+    if assign_cast_prop is None and assign_rel_props:
+        assign_cast_prop = assign_rel_props[1] if len(assign_rel_props) >= 2 and assign_rel_props[0] == assign_score_prop else assign_rel_props[0]
+
+    performer_name_by_id = {}
+    performer_ids_by_name = defaultdict(list)
+    for pg in performer_rows:
+        props = pg.get("properties", {})
+        nm = _extract_page_title_by_type(props, performer_type, ["名前", "タイトル", "Name"])
+        if not nm:
+            nm = _extract_name_title(pg)
+        pid = pg.get("id")
+        if pid and nm:
+            performer_name_by_id[pid] = nm
+            performer_ids_by_name[_normalize_person_name(nm)].append(pid)
+
+    def _new_perf_stat(pid: str, title: str) -> dict:
+        return {
+            "performance_id": pid,
+            "title": title or "(タイトル未設定)",
+            "cast_total": 0,
+            "cast_missing_performer": 0,
+            "cast_duplicates": 0,
+            "score_total": 0,
+            "assign_total": 0,
+            "assign_missing_cast": 0,
+            "assign_missing_score": 0,
+            "fixable_cast_missing_performer": 0,
+            "fixable_assign_missing_cast": 0,
+            "issue_count": 0,
+        }
+
+    perf_stats = {pid: _new_perf_stat(pid, ttl) for pid, ttl in perf_title_by_id.items()}
+    cast_key_to_rows = defaultdict(list)
+    cast_row_to_perf = {}
+    cast_row_name = {}
+    cast_name_index = defaultdict(lambda: defaultdict(list))  # perf_id -> normalized_name -> [cast_row_id]
+    fix_cast_missing_performer = []
+    duplicate_archive_ids = []
+
+    for row in cast_rows:
+        row_id = row.get("id")
+        props = row.get("properties", {})
+        perf_ids = _extract_relation_ids(props, cast_perf_prop)
+        performer_ids = _extract_relation_ids(props, cast_performer_prop)
+        row_title = ""
+        if cast_title_prop:
+            row_title = plain_text_join((props.get(cast_title_prop) or {}).get("title", []))
+        row_name = performer_name_by_id.get(performer_ids[0], "") if performer_ids else ""
+        if not row_name:
+            row_name = _tail_person_name(row_title)
+        norm_row_name = _normalize_person_name(row_name)
+        if row_id and norm_row_name:
+            cast_row_name[row_id] = norm_row_name
+
+        if not perf_ids:
+            continue
+
+        for pid in perf_ids:
+            if pid not in perf_stats:
+                perf_stats[pid] = _new_perf_stat(pid, perf_title_by_id.get(pid, "（出演DB外のID）"))
+            stt = perf_stats[pid]
+            stt["cast_total"] += 1
+            cast_row_to_perf[row_id] = pid
+            if row_id and norm_row_name:
+                cast_name_index[pid][norm_row_name].append(row_id)
+            if not performer_ids:
+                stt["cast_missing_performer"] += 1
+                candidate_ids = performer_ids_by_name.get(norm_row_name, []) if norm_row_name else []
+                if row_id and len(candidate_ids) == 1:
+                    fix_cast_missing_performer.append(
+                        {"row_id": row_id, "performer_id": candidate_ids[0], "performance_id": pid}
+                    )
+                    stt["fixable_cast_missing_performer"] += 1
+            if performer_ids:
+                dkey = (pid, performer_ids[0])
+                cast_key_to_rows[dkey].append(row_id)
+
+    for (pid, _performer_id), row_ids in cast_key_to_rows.items():
+        if len(row_ids) > 1:
+            extra = row_ids[1:]
+            perf_stats[pid]["cast_duplicates"] += len(extra)
+            duplicate_archive_ids.extend([rid for rid in extra if rid])
+
+    score_row_to_perf = {}
+    for row in score_rows:
+        row_id = row.get("id")
+        props = row.get("properties", {})
+        perf_ids = _extract_relation_ids(props, score_perf_prop)
+        if not row_id or not perf_ids:
+            continue
+        pid = perf_ids[0]
+        score_row_to_perf[row_id] = pid
+        if pid not in perf_stats:
+            perf_stats[pid] = _new_perf_stat(pid, perf_title_by_id.get(pid, "（出演DB外のID）"))
+        perf_stats[pid]["score_total"] += 1
+
+    fix_assign_missing_cast = []
+    for row in assign_rows:
+        row_id = row.get("id")
+        props = row.get("properties", {})
+        score_ids = _extract_relation_ids(props, assign_score_prop)
+        cast_ids = _extract_relation_ids(props, assign_cast_prop)
+        pid = score_row_to_perf.get(score_ids[0]) if score_ids else None
+        if not pid:
+            continue
+        if pid not in perf_stats:
+            perf_stats[pid] = _new_perf_stat(pid, perf_title_by_id.get(pid, "（出演DB外のID）"))
+        stt = perf_stats[pid]
+        stt["assign_total"] += 1
+        if not score_ids:
+            stt["assign_missing_score"] += 1
+        if cast_ids:
+            continue
+        stt["assign_missing_cast"] += 1
+        assign_title = ""
+        if assign_title_prop:
+            assign_title = plain_text_join((props.get(assign_title_prop) or {}).get("title", []))
+        candidate_name = _normalize_person_name(_tail_person_name(assign_title))
+        candidate_rows = cast_name_index.get(pid, {}).get(candidate_name, [])
+        if row_id and len(candidate_rows) == 1:
+            fix_assign_missing_cast.append(
+                {"row_id": row_id, "cast_row_id": candidate_rows[0], "performance_id": pid}
+            )
+            stt["fixable_assign_missing_cast"] += 1
+
+    rows = []
+    totals = {
+        "performance_count": 0,
+        "issue_performance_count": 0,
+        "cast_total": 0,
+        "cast_missing_performer": 0,
+        "cast_duplicates": 0,
+        "assign_total": 0,
+        "assign_missing_cast": 0,
+        "fixable_cast_missing_performer": len(fix_cast_missing_performer),
+        "fixable_assign_missing_cast": len(fix_assign_missing_cast),
+        "duplicate_archive_candidates": len(duplicate_archive_ids),
+    }
+    for pid, stt in perf_stats.items():
+        stt["issue_count"] = (
+            stt["cast_missing_performer"]
+            + stt["cast_duplicates"]
+            + stt["assign_missing_cast"]
+            + stt["assign_missing_score"]
+        )
+        rows.append(stt)
+        totals["performance_count"] += 1
+        totals["cast_total"] += stt["cast_total"]
+        totals["cast_missing_performer"] += stt["cast_missing_performer"]
+        totals["cast_duplicates"] += stt["cast_duplicates"]
+        totals["assign_total"] += stt["assign_total"]
+        totals["assign_missing_cast"] += stt["assign_missing_cast"]
+        if stt["issue_count"] > 0:
+            totals["issue_performance_count"] += 1
+    rows.sort(key=lambda x: (x["issue_count"], x["cast_total"] + x["assign_total"], x["title"]), reverse=True)
+
+    return {
+        "generated_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        "rows": rows,
+        "totals": totals,
+        "fix_candidates": {
+            "cast_missing_performer": fix_cast_missing_performer,
+            "assign_missing_cast": fix_assign_missing_cast,
+            "cast_duplicate_archive": duplicate_archive_ids,
+        },
+        "props": {
+            "cast_performer_prop": cast_performer_prop,
+            "assign_cast_prop": assign_cast_prop,
+        },
+        "error": "",
+    }
+
+def run_performance_relation_repair(report: dict, mode: str = "partial") -> tuple[dict, list[str]]:
+    stats = {
+        "cast_missing_performer_fixed": 0,
+        "assign_missing_cast_fixed": 0,
+        "duplicates_archived": 0,
+        "failed": 0,
+    }
+    errors = []
+    if not report or report.get("error"):
+        return stats, ["整合チェック結果がありません。先にチェックを実行してください。"]
+    if mode == "manual":
+        return stats, ["手動モードのため自動修復は実行しません。"]
+
+    cast_performer_prop = (report.get("props") or {}).get("cast_performer_prop")
+    assign_cast_prop = (report.get("props") or {}).get("assign_cast_prop")
+
+    for c in (report.get("fix_candidates") or {}).get("cast_missing_performer", []):
+        row_id = c.get("row_id")
+        performer_id = c.get("performer_id")
+        if not row_id or not performer_id or not cast_performer_prop:
+            continue
+        payload = {"properties": {cast_performer_prop: {"relation": [{"id": performer_id}]}}}
+        res = api_request("patch", f"https://api.notion.com/v1/pages/{row_id}", headers=NOTION_HEADERS, json=payload)
+        if res is not None and res.status_code == 200:
+            stats["cast_missing_performer_fixed"] += 1
+        else:
+            stats["failed"] += 1
+            errors.append(f"出演者補完失敗: {row_id}")
+
+    for c in (report.get("fix_candidates") or {}).get("assign_missing_cast", []):
+        row_id = c.get("row_id")
+        cast_row_id = c.get("cast_row_id")
+        if not row_id or not cast_row_id or not assign_cast_prop:
+            continue
+        payload = {"properties": {assign_cast_prop: {"relation": [{"id": cast_row_id}]}}}
+        res = api_request("patch", f"https://api.notion.com/v1/pages/{row_id}", headers=NOTION_HEADERS, json=payload)
+        if res is not None and res.status_code == 200:
+            stats["assign_missing_cast_fixed"] += 1
+        else:
+            stats["failed"] += 1
+            errors.append(f"楽曲別担当者補完失敗: {row_id}")
+
+    if mode == "full":
+        for row_id in (report.get("fix_candidates") or {}).get("cast_duplicate_archive", []):
+            if not row_id:
+                continue
+            res = api_request(
+                "patch",
+                f"https://api.notion.com/v1/pages/{row_id}",
+                headers=NOTION_HEADERS,
+                json={"archived": True},
+            )
+            if res is not None and res.status_code == 200:
+                stats["duplicates_archived"] += 1
+            else:
+                stats["failed"] += 1
+                errors.append(f"重複行アーカイブ失敗: {row_id}")
+    return stats, errors
 
 def is_japanese_name(name: str) -> bool:
     """漢字・ひらがな・カタカナを含む場合は日本語著者名とみなす"""
@@ -2897,6 +3319,8 @@ for key, default in {
     "drive_skip_mode":     False,
     "app_mode":            "新規登録",
     "app_mode_widget":     "新規登録",
+    "reconcile_report":    None,
+    "reconcile_repair_mode": "partial",
 }.items():
     if key not in st.session_state:
         st.session_state[key] = default
@@ -2977,7 +3401,7 @@ with st.sidebar:
             st.session_state.app_mode_widget = st.session_state.app_mode
         if "app_mode_widget" not in st.session_state:
             st.session_state.app_mode_widget = st.session_state.get("app_mode", "新規登録")
-        mode = st.radio("モード", ["新規登録", "データ管理", "自動同期"], key="app_mode_widget")
+        mode = st.radio("モード", ["新規登録", "データ管理", "出演者管理", "自動同期"], key="app_mode_widget")
         st.session_state.app_mode = mode
         sync_scope = "欠損のみ補填"  # legacy compat
         if mode == "データ管理":
@@ -2997,7 +3421,7 @@ with st.sidebar:
                 key="manual_sort_order",
             )
 
-        if mode != "新規登録":
+        if mode in ("データ管理", "自動同期"):
             st.divider()
             st.header("媒体フィルタ")
             media_filter_options = list(MEDIA_ICON_MAP.keys())
@@ -3299,7 +3723,7 @@ if mode == "新規登録":
                     new_list = []
                     for i, item in enumerate(songs):
                         if is_performance:
-                            c_num, c_inp, c_play, c_part, c_players, c_del = st.columns([0.3, 2.6, 0.8, 1.2, 2.0, 0.5])
+                            c_num, c_inp, c_play, c_part, c_del = st.columns([0.3, 3.2, 0.8, 1.2, 0.5])
                         else:
                             c_num, c_inp, c_del = st.columns([0.3, 4, 0.5])
                         c_num.markdown(f"**{i+1}.**")
@@ -3307,15 +3731,7 @@ if mode == "新規登録":
                         if is_performance:
                             played = c_play.checkbox("演奏", value=bool(item.get("played", True)), key=f"{slot_key}_played_{i}", label_visibility="collapsed")
                             p = c_part.text_input("", value=item.get("part", ""), key=f"{slot_key}_p_{i}", placeholder="担当楽器", label_visibility="collapsed")
-                            player_options = [x.get("name", "") for x in st.session_state.get("ev_participants", []) if x.get("name")]
-                            default_players = [nm for nm in (item.get("players", []) or []) if nm in player_options]
-                            pl = c_players.multiselect(
-                                "担当者",
-                                options=player_options,
-                                default=default_players,
-                                key=f"{slot_key}_players_{i}",
-                                label_visibility="collapsed",
-                            )
+                            pl = []
                         else:
                             played = False
                             p = ""
@@ -3558,59 +3974,18 @@ if mode == "新規登録":
                             st.rerun()
                     related_score_ids = [x["id"] for x in st.session_state.ev_score_selected]
 
-                st.divider()
-                st.subheader("👥 演奏会参加者（任意）")
-                if "ev_participants" not in st.session_state:
-                    st.session_state.ev_participants = []
-                default_self = (DEFAULT_PERFORMER_NAME or "").strip()
-                if default_self:
-                    exists_self = any(
-                        _normalize_person_name(x.get("name", "")) == _normalize_person_name(default_self)
-                        for x in st.session_state.ev_participants
-                    )
-                    if not exists_self:
-                        st.session_state.ev_participants.insert(0, {"name": default_self, "instruments": "", "memo": ""})
-                p_c1, p_c2, p_c3, p_c4 = st.columns([2, 2, 2, 1])
-                p_name = p_c1.text_input("出演者名", key="ev_part_name", placeholder="例: 山田太郎")
-                p_inst = p_c2.text_input("担当楽器", key="ev_part_instruments", placeholder="例: Timpani / Perc.")
-                p_memo = p_c3.text_input("メモ", key="ev_part_memo", placeholder="任意")
-                if p_c4.button("＋追加", key="ev_part_add"):
-                    if p_name.strip():
-                        new_key = _normalize_person_name(p_name)
-                        dup_idx = next(
-                            (i for i, x in enumerate(st.session_state.ev_participants)
-                             if _normalize_person_name(x.get("name", "")) == new_key),
-                            None,
-                        )
-                        new_row = {"name": p_name.strip(), "instruments": p_inst.strip(), "memo": p_memo.strip()}
-                        if dup_idx is None:
-                            st.session_state.ev_participants.append(new_row)
-                        else:
-                            # 重複時は上書きして一意性を維持
-                            st.session_state.ev_participants[dup_idx] = new_row
-                        st.session_state.pop("ev_part_name", None)
-                        st.session_state.pop("ev_part_instruments", None)
-                        st.session_state.pop("ev_part_memo", None)
-                        st.rerun()
-                    else:
-                        st.warning("出演者名を入力してください。")
-
-                if st.session_state.ev_participants:
-                    st.caption("登録予定の参加者")
-                    for i, row in enumerate(st.session_state.ev_participants):
-                        c1, c2, c3, c4 = st.columns([2, 2, 2, 1])
-                        c1.write(row.get("name", ""))
-                        c2.write(row.get("instruments", ""))
-                        c3.write(row.get("memo", ""))
-                        if c4.button("✕", key=f"ev_part_rm_{i}"):
-                            st.session_state.ev_participants = [
-                                x for j, x in enumerate(st.session_state.ev_participants) if j != i
-                            ]
-                            st.rerun()
-
             st.divider()
             event_location = location_search_ui("event", media_label)
-            if st.button("📥 登録する", type="primary", key="event_register", disabled=not event_title):
+            register_clicked = st.button(
+                "📥 登録する",
+                type="primary",
+                key="event_register",
+                disabled=(not event_title) or st.session_state.get("event_registering", False),
+            )
+            if register_clicked and not st.session_state.get("event_registering", False):
+                st.session_state.event_registering = True
+                st.rerun()
+            if st.session_state.get("event_registering", False):
                 watch_str = event_watch.isoformat() if event_watch else None
                 start_str = event_start.isoformat() if event_start else None
                 end_str   = event_end.isoformat()   if event_end   else None
@@ -3630,109 +4005,67 @@ if mode == "新規登録":
                         lines += [fmt(i, x) for i, x in enumerate(encore_items)]
                     memo_text = "\n".join(lines) if lines else None
 
-                ok = create_notion_page(
-                    jp_title=event_title, en_title=event_title,
-                    media_type_label=media_label,
-                    tmdb_id=None, media_type="event",
-                    cover_url=get_media_icon_url(media_label),
-                    tmdb_release=start_str or "",
-                    details={"genres": [event_genre] if event_genre else [], "cast": event_cast, "director": event_creator, "score": None},
-                    wlflg=wlflg,
-                    watched_date=watch_str,
-                    rating=rating_sel if rating_sel else None,
-                    event_end=end_str,
-                    location=event_location,
-                    memo=memo_text,
-                    relation_prop="演奏曲" if is_performance and related_score_ids else None,
-                    relation_ids=related_score_ids if is_performance else None,
-                )
-                if ok:
-                    created_setlist = failed_setlist = 0
-                    setlist_reason = ""
-                    created_participants = failed_participants = 0
-                    participants_reason = ""
-                    created_song_assign = failed_song_assign = 0
-                    song_assign_reason = ""
-                    score_rows_created: list[dict] = []
-                    cast_row_map: dict = {}
-                    if is_performance and NOTION_SCORE_DB_ID:
-                        setlist_main = [x for x in st.session_state.get("ev_setlist_main", []) if (x.get("title") or "").strip()]
-                        setlist_encore = [x for x in st.session_state.get("ev_setlist_encore", []) if (x.get("title") or "").strip()]
-                        if setlist_main or setlist_encore:
-                            perf_page_id = st.session_state.get("last_created_page_id", "")
-                            perf_date = watch_str or start_str or ""
-                            score_pages_for_link = _get_score_pages()
-                            selected_scores_for_link = st.session_state.get("ev_score_selected", [])
-                            created_setlist, failed_setlist, setlist_reason, score_rows_created = create_setlist_rows_for_performance(
-                                performance_page_id=perf_page_id,
-                                performance_title=event_title,
-                                performance_date=perf_date,
-                                main_items=setlist_main,
-                                encore_items=setlist_encore,
-                                selected_scores=selected_scores_for_link,
-                                score_pages=score_pages_for_link,
-                            )
-                        else:
-                            setlist_reason = "セットリスト入力なし"
-                    if is_performance and NOTION_PERFORMANCE_CAST_DB_ID:
-                        perf_page_id = st.session_state.get("last_created_page_id", "")
-                        participants = list(st.session_state.get("ev_participants", []))
-                        default_self = (DEFAULT_PERFORMER_NAME or "").strip()
-                        if default_self and not any(
-                            _normalize_person_name(x.get("name", "")) == _normalize_person_name(default_self)
-                            for x in participants
-                        ):
-                            participants.insert(0, {"name": default_self, "instruments": "", "memo": ""})
-                        created_participants, failed_participants, participants_reason, cast_row_map = create_performance_participant_rows(
-                            performance_page_id=perf_page_id,
-                            performance_title=event_title,
-                            participants=participants,
-                        )
-                    if is_performance and NOTION_SONG_ASSIGN_DB_ID and score_rows_created and cast_row_map:
-                        created_song_assign, failed_song_assign, song_assign_reason = create_song_assignment_rows(
-                            score_rows=score_rows_created,
-                            cast_row_map=cast_row_map,
-                        )
-                    elif is_performance and NOTION_SONG_ASSIGN_DB_ID and score_rows_created and not cast_row_map:
-                        song_assign_reason = "演奏会参加者が未登録のため楽曲別担当者DBはスキップ"
-                    for key in ["ev_mb_composers", "ev_mb_works", "ev_mb_filter",
-                                "ev_it_results", "ev_setlist_main", "ev_setlist_encore", "ev_participants"]:
-                        st.session_state.pop(key, None)
-                    reset_new_register_state()
-                    sync_notion_after_update(
-                        page_id=st.session_state.get("last_created_page_id"),
-                        updated_page=st.session_state.get("last_created_page"),
+                try:
+                    ok = create_notion_page(
+                        jp_title=event_title, en_title=event_title,
+                        media_type_label=media_label,
+                        tmdb_id=None, media_type="event",
+                        cover_url=get_media_icon_url(media_label),
+                        tmdb_release=start_str or "",
+                        details={"genres": [event_genre] if event_genre else [], "cast": event_cast, "director": event_creator, "score": None},
+                        wlflg=wlflg,
+                        watched_date=watch_str,
+                        rating=rating_sel if rating_sel else None,
+                        event_end=end_str,
+                        location=event_location,
+                        memo=memo_text,
+                        relation_prop="演奏曲" if is_performance and related_score_ids else None,
+                        relation_ids=related_score_ids if is_performance else None,
                     )
-                    if is_performance and NOTION_SCORE_DB_ID:
-                        if created_setlist > 0 and failed_setlist == 0:
-                            st.success(f"✅ 演奏曲DBに {created_setlist} 件登録しました")
-                        elif created_setlist > 0 and failed_setlist > 0:
-                            st.warning(f"⚠️ 演奏曲DB登録: 成功 {created_setlist} 件 / 失敗 {failed_setlist} 件")
+                    if ok:
+                        created_setlist = failed_setlist = 0
+                        setlist_reason = ""
+                        if is_performance and NOTION_SCORE_DB_ID:
+                            setlist_main = [x for x in st.session_state.get("ev_setlist_main", []) if (x.get("title") or "").strip()]
+                            setlist_encore = [x for x in st.session_state.get("ev_setlist_encore", []) if (x.get("title") or "").strip()]
+                            if setlist_main or setlist_encore:
+                                perf_page_id = st.session_state.get("last_created_page_id", "")
+                                perf_date = watch_str or start_str or ""
+                                score_pages_for_link = _get_score_pages()
+                                selected_scores_for_link = st.session_state.get("ev_score_selected", [])
+                                created_setlist, failed_setlist, setlist_reason, _ = create_setlist_rows_for_performance(
+                                    performance_page_id=perf_page_id,
+                                    performance_title=event_title,
+                                    performance_date=perf_date,
+                                    main_items=setlist_main,
+                                    encore_items=setlist_encore,
+                                    selected_scores=selected_scores_for_link,
+                                    score_pages=score_pages_for_link,
+                                )
+                            else:
+                                setlist_reason = "セットリスト入力なし"
+                        for key in ["ev_mb_composers", "ev_mb_works", "ev_mb_filter",
+                                    "ev_it_results", "ev_setlist_main", "ev_setlist_encore"]:
+                            st.session_state.pop(key, None)
+                        reset_new_register_state()
+                        sync_notion_after_update(
+                            page_id=st.session_state.get("last_created_page_id"),
+                            updated_page=st.session_state.get("last_created_page"),
+                        )
+                        if is_performance and NOTION_SCORE_DB_ID:
+                            if created_setlist > 0 and failed_setlist == 0:
+                                st.success(f"✅ 演奏曲DBに {created_setlist} 件登録しました")
+                            elif created_setlist > 0 and failed_setlist > 0:
+                                st.warning(f"⚠️ 演奏曲DB登録: 成功 {created_setlist} 件 / 失敗 {failed_setlist} 件")
                         elif failed_setlist > 0:
                             st.warning(f"⚠️ 演奏曲DB登録に失敗しました（{failed_setlist} 件）")
                         elif setlist_reason:
                             st.info(f"ℹ️ 演奏曲DB連携: {setlist_reason}")
-                    if is_performance and NOTION_PERFORMANCE_CAST_DB_ID:
-                        if created_participants > 0 and failed_participants == 0:
-                            st.success(f"✅ 演奏会参加者DBに {created_participants} 件登録しました")
-                        elif created_participants > 0 and failed_participants > 0:
-                            st.warning(f"⚠️ 演奏会参加者DB登録: 成功 {created_participants} 件 / 失敗 {failed_participants} 件")
-                        elif failed_participants > 0:
-                            st.warning(f"⚠️ 演奏会参加者DB登録に失敗しました（{failed_participants} 件）")
-                        elif participants_reason:
-                            st.info(f"ℹ️ 演奏会参加者DB連携: {participants_reason}")
-                    if is_performance and NOTION_SONG_ASSIGN_DB_ID:
-                        if created_song_assign > 0 and failed_song_assign == 0:
-                            st.success(f"✅ 楽曲別担当者DBに {created_song_assign} 件登録しました")
-                        elif created_song_assign > 0 and failed_song_assign > 0:
-                            st.warning(f"⚠️ 楽曲別担当者DB登録: 成功 {created_song_assign} 件 / 失敗 {failed_song_assign} 件")
-                        elif failed_song_assign > 0:
-                            st.warning(f"⚠️ 楽曲別担当者DB登録に失敗しました（{failed_song_assign} 件）")
-                        elif song_assign_reason:
-                            st.info(f"ℹ️ 楽曲別担当者DB連携: {song_assign_reason}")
-                    show_post_register_ui()
-                else:
-                    st.error("❌ 登録失敗")
+                        show_post_register_ui()
+                    else:
+                        st.error("❌ 登録失敗")
+                finally:
+                    st.session_state.event_registering = False
             st.stop()
 
         # ============================================================
@@ -4840,6 +5173,178 @@ def resolve_needs(notion_ok_now, drive_ok_now):
     if diff_filter == "Notionのみ更新（Driveあり・Notionカバーなし）": return True, False
     if diff_filter == "Driveのみ更新（Notionカバーあり・Driveなし）":  return False, True
     return not notion_ok_now, not drive_ok_now
+
+# ============================================================
+# 出演者管理モード
+# ============================================================
+if mode == "出演者管理":
+    st.subheader("👥 出演者管理")
+
+    with st.expander("🧪 演奏会リンク整合チェック（演奏会単位サマリ）", expanded=False):
+        st.caption("人数が多い運用向けに、明細ではなく演奏会単位の件数サマリで表示します。")
+        if st.button("🔍 整合チェックを実行", key="reconcile_run"):
+            with st.spinner("整合チェック実行中..."):
+                st.session_state.reconcile_report = analyze_performance_relation_integrity(force_refresh=False)
+        report = st.session_state.get("reconcile_report")
+        if report:
+            if report.get("error"):
+                st.error(report.get("error"))
+            else:
+                totals = report.get("totals", {})
+                c1, c2, c3, c4 = st.columns(4)
+                c1.metric("対象演奏会", totals.get("performance_count", 0))
+                c2.metric("要確認演奏会", totals.get("issue_performance_count", 0))
+                c3.metric("出演者欠損", totals.get("cast_missing_performer", 0))
+                c4.metric("重複候補", totals.get("duplicate_archive_candidates", 0))
+                st.caption(
+                    f"高確度修復候補: 出演者補完 {totals.get('fixable_cast_missing_performer', 0)} 件 / "
+                    f"楽曲別担当者補完 {totals.get('fixable_assign_missing_cast', 0)} 件"
+                )
+                mode_label = st.radio(
+                    "修復モード",
+                    ["手動", "半自動（高確度のみ）", "自動（高確度＋重複整理）"],
+                    index=["手動", "半自動（高確度のみ）", "自動（高確度＋重複整理）"].index(
+                        "手動" if st.session_state.get("reconcile_repair_mode") == "manual"
+                        else "自動（高確度＋重複整理）" if st.session_state.get("reconcile_repair_mode") == "full"
+                        else "半自動（高確度のみ）"
+                    ),
+                    key="reconcile_repair_mode_display",
+                )
+                if mode_label == "手動":
+                    st.session_state.reconcile_repair_mode = "manual"
+                elif mode_label == "自動（高確度＋重複整理）":
+                    st.session_state.reconcile_repair_mode = "full"
+                else:
+                    st.session_state.reconcile_repair_mode = "partial"
+                if st.button("🛠 高確度修復を実行", key="reconcile_apply"):
+                    with st.spinner("修復実行中..."):
+                        stats, errs = run_performance_relation_repair(
+                            report,
+                            mode=st.session_state.get("reconcile_repair_mode", "partial"),
+                        )
+                    st.success(
+                        "✅ 修復完了: "
+                        f"出演者補完 {stats.get('cast_missing_performer_fixed', 0)} 件 / "
+                        f"楽曲別担当者補完 {stats.get('assign_missing_cast_fixed', 0)} 件 / "
+                        f"重複整理 {stats.get('duplicates_archived', 0)} 件"
+                    )
+                    if stats.get("failed", 0) > 0:
+                        st.warning(f"⚠️ 一部失敗: {stats.get('failed', 0)} 件")
+                    if errs:
+                        st.caption("失敗例（先頭10件）")
+                        for e in errs[:10]:
+                            st.write(f"- {e}")
+                    with st.spinner("再チェック中..."):
+                        st.session_state.reconcile_report = analyze_performance_relation_integrity(force_refresh=False)
+
+                qsum = clearable_text_input("要確認演奏会を検索", "reconcile_filter_query", placeholder="例: 第1回演奏会")
+                rows = report.get("rows", [])
+                rows = [r for r in rows if r.get("issue_count", 0) > 0]
+                if qsum.strip():
+                    ql = qsum.strip().lower()
+                    rows = [r for r in rows if ql in (r.get("title") or "").lower()]
+                if not rows:
+                    st.info("要確認の演奏会はありません。")
+                else:
+                    st.caption(f"要確認: {len(rows)} 件（最大100件表示）")
+                    for r in rows[:100]:
+                        st.write(
+                            f"- {r.get('title','(無題)')}  | 出演者 {r.get('cast_total',0)}件 / "
+                            f"欠損 {r.get('cast_missing_performer',0)} / 重複 {r.get('cast_duplicates',0)} / "
+                            f"楽曲別担当者欠損 {r.get('assign_missing_cast',0)}"
+                        )
+
+    perf_pages = _get_performance_pages(force_refresh=True)
+    if not perf_pages:
+        st.info("出演データが見つかりません。先にNotionデータ取得を実行してください。")
+        st.stop()
+
+    q = clearable_text_input("出演を検索", "cast_mode_perf_query", placeholder="例: 第1回演奏会")
+    matches = [p for p in perf_pages if q.strip().lower() in (p.get("title") or "").lower()] if q.strip() else perf_pages[:200]
+    options = ["（選択してください）"] + [p["title"] for p in matches]
+    sel = st.selectbox("出演を選択", options, key="cast_mode_perf_pick")
+    selected_perf = matches[options.index(sel) - 1] if sel != "（選択してください）" else None
+
+    if st.button("🔄 出演者DB→演奏者マスタ同期", key="cast_mode_sync_master"):
+        with st.spinner("同期中..."):
+            c, s, e = sync_performer_master_from_performer_db()
+        if e:
+            st.warning(e)
+        else:
+            st.success(f"✅ 追加 {c} 件 / 既存 {s} 件")
+
+    master_names = get_performer_master_names()
+    if selected_perf:
+        st.caption(f"対象出演: {selected_perf.get('title','')}")
+        if "cast_mode_participants" not in st.session_state:
+            st.session_state.cast_mode_participants = []
+        if st.button("既定参加者をクリア", key="cast_mode_clear"):
+            st.session_state.cast_mode_participants = []
+            st.rerun()
+
+        default_self = (DEFAULT_PERFORMER_NAME or "").strip()
+        if default_self and not any(
+            _normalize_person_name(x.get("name", "")) == _normalize_person_name(default_self)
+            for x in st.session_state.cast_mode_participants
+        ):
+            st.session_state.cast_mode_participants.insert(0, {"name": default_self, "instruments": "", "memo": ""})
+
+        with st.expander("参加者を追加", expanded=True):
+            if master_names:
+                mq = st.text_input("演奏者マスタ検索", key="cast_mode_master_q", placeholder="例: 喜田")
+                mm = [n for n in master_names if mq.lower() in n.lower()] if mq.strip() else master_names[:100]
+                pick = st.selectbox("マスタ候補", ["（選択してください）"] + mm, key="cast_mode_master_pick")
+                if pick != "（選択してください）" and st.button("＋マスタから追加", key="cast_mode_master_add"):
+                    k = _normalize_person_name(pick)
+                    if not any(_normalize_person_name(x.get("name", "")) == k for x in st.session_state.cast_mode_participants):
+                        st.session_state.cast_mode_participants.append({"name": pick, "instruments": "", "memo": ""})
+                        st.rerun()
+            c1, c2, c3, c4 = st.columns([2, 2, 2, 1])
+            pn = c1.text_input("出演者名", key="cast_mode_name")
+            pi = c2.text_input("担当楽器", key="cast_mode_inst")
+            pm = c3.text_input("メモ", key="cast_mode_memo")
+            if c4.button("＋追加", key="cast_mode_add"):
+                if pn.strip():
+                    nk = _normalize_person_name(pn)
+                    dup = next((i for i, x in enumerate(st.session_state.cast_mode_participants) if _normalize_person_name(x.get("name", "")) == nk), None)
+                    row = {"name": pn.strip(), "instruments": pi.strip(), "memo": pm.strip()}
+                    if dup is None:
+                        st.session_state.cast_mode_participants.append(row)
+                    else:
+                        st.session_state.cast_mode_participants[dup] = row
+                    for k in ["cast_mode_name", "cast_mode_inst", "cast_mode_memo"]:
+                        st.session_state.pop(k, None)
+                    st.rerun()
+                else:
+                    st.warning("出演者名を入力してください。")
+
+            if st.session_state.cast_mode_participants:
+                st.caption("登録予定")
+                for i, row in enumerate(st.session_state.cast_mode_participants):
+                    rc1, rc2, rc3, rc4 = st.columns([2, 2, 2, 1])
+                    rc1.write(row.get("name", ""))
+                    rc2.write(row.get("instruments", ""))
+                    rc3.write(row.get("memo", ""))
+                    if rc4.button("✕", key=f"cast_mode_rm_{i}"):
+                        st.session_state.cast_mode_participants = [x for j, x in enumerate(st.session_state.cast_mode_participants) if j != i]
+                        st.rerun()
+
+        if st.button("📥 この出演に参加者を登録", type="primary", key="cast_mode_submit"):
+            with st.spinner("登録中..."):
+                c, f, msg, _ = create_performance_participant_rows(
+                    performance_page_id=selected_perf["id"],
+                    performance_title=selected_perf.get("title", ""),
+                    participants=st.session_state.cast_mode_participants,
+                )
+            if c > 0 and f == 0:
+                st.success(f"✅ 演奏会参加者DBに {c} 件登録しました")
+            elif c > 0 and f > 0:
+                st.warning(f"⚠️ 成功 {c} 件 / 失敗 {f} 件")
+            elif f > 0:
+                st.error(f"❌ 失敗 {f} 件")
+            elif msg:
+                st.info(msg)
+    st.stop()
 
 # ============================================================
 # カバー全削除
