@@ -31,7 +31,7 @@ NOTION_HEADERS = {
 
 DEFAULT_TIMEOUT = 20
 REFRESH_BATCH_SIZE = 20
-APP_VERSION = "7.21"
+APP_VERSION = "7.23"
 
 # ============================================================
 # 媒体マッピング
@@ -257,7 +257,7 @@ def fetch_image_bytes(cover_url: str) -> tuple[bytes | None, str | None]:
         mimetype = "image/jpeg"
     return img_res.content, mimetype
 
-def save_bytes_to_drive(filename: str, image_bytes: bytes, mimetype: str) -> str | None:
+def save_bytes_to_drive(filename: str, image_bytes: bytes, mimetype: str, make_public: bool = False) -> str | None:
     service = get_drive_service_safe()
     if service is None:
         return None
@@ -274,6 +274,11 @@ def save_bytes_to_drive(filename: str, image_bytes: bytes, mimetype: str) -> str
         ).execute()
         file_id = result["id"]
         st.session_state.drive_files_cache[filename] = file_id
+    if make_public:
+        try:
+            service.permissions().create(fileId=file_id, body={"role": "reader", "type": "anyone"}).execute()
+        except Exception:
+            pass
     return file_id
 
 def save_cover_to_drive_noid(cover_url: str, title: str, page_id: str) -> str | None:
@@ -283,20 +288,46 @@ def save_cover_to_drive_noid(cover_url: str, title: str, page_id: str) -> str | 
     if not image_bytes or not mimetype:
         return None
     filename = make_noid_filename(title, page_id)
-    return save_bytes_to_drive(filename, image_bytes, mimetype)
+    return save_bytes_to_drive(filename, image_bytes, mimetype, make_public=True)
 
-def clearable_text_input(label: str, key: str, placeholder: str = "", value: str = "", container=None, **kwargs) -> str:
+def clearable_text_input(
+    label: str,
+    key: str,
+    placeholder: str = "",
+    value: str = "",
+    container=None,
+    refresh_on_value_change: bool = False,
+    **kwargs
+) -> str:
     """× ボタン付き text_input。セッションステートで値を管理する。"""
     ss_key = f"_cti_{key}"
     if ss_key not in st.session_state:
         st.session_state[ss_key] = value
-    # 外部から value が明示的に渡された場合（初期値設定）は上書きしない
+    elif refresh_on_value_change and value != st.session_state.get(ss_key, ""):
+        st.session_state[ss_key] = value
+        st.session_state.pop(key, None)
+
     inp_col, btn_col = (container or st).columns([10, 1])
-    val = inp_col.text_input(label, value=st.session_state[ss_key],
-                             placeholder=placeholder, key=key, **kwargs)
+    # key が既に存在する状態で value を同時指定すると Streamlit 警告になるため分岐
+    if key in st.session_state:
+        val = inp_col.text_input(
+            label,
+            placeholder=placeholder,
+            key=key,
+            **kwargs,
+        )
+    else:
+        val = inp_col.text_input(
+            label,
+            value=st.session_state[ss_key],
+            placeholder=placeholder,
+            key=key,
+            **kwargs,
+        )
     st.session_state[ss_key] = val
     if btn_col.button("×", key=f"_clr_{key}", help="クリア"):
         st.session_state[ss_key] = ""
+        st.session_state.pop(key, None)
         st.rerun()
     return st.session_state[ss_key]
 
@@ -442,7 +473,7 @@ def save_to_drive(cover_url: str, title: str, tmdb_id, image_bytes: bytes | None
                 return None
             mimetype = fetched_mime or "image/jpeg"
         fname = make_filename(title, tmdb_id)
-        return save_bytes_to_drive(fname, image_bytes, mimetype)
+        return save_bytes_to_drive(fname, image_bytes, mimetype, make_public=True)
     except Exception as e:
         st.warning(f"Drive保存失敗 ({title}): {e}")
         return None
@@ -3306,38 +3337,74 @@ if mode == "新規登録":
                 st.stop()
 
             st.divider()
-            col_composer, col_title = st.columns([1, 1])
-            composer_input = col_composer.text_input("作曲家名", placeholder="例: Beethoven / ベートーヴェン")
-            title_filter   = col_title.text_input("曲名で絞り込み（任意）", placeholder="例: Symphony")
+            st.caption("1) 作曲家を検索 → 2) 作曲家を確定 → 3) 曲名で検索 → 4) 曲を選択")
 
-            if st.button("🔍 検索", key="mb_composer_search"):
-                if composer_input:
+            composer_input = st.text_input(
+                "1. 作曲家を検索",
+                key="mb_composer_query",
+                placeholder="例: Beethoven / ベートーヴェン",
+            )
+            if st.button("🔍 作曲家を検索", key="mb_composer_search"):
+                if composer_input.strip():
                     with st.spinner("作曲家を検索中..."):
-                        composers, err = search_mb_composer(composer_input)
+                        composers, err = search_mb_composer(composer_input.strip())
                     if err:
                         st.error(f"⚠️ MusicBrainz API エラー: {err}")
-                    st.session_state.mb_composers     = composers
-                    st.session_state.mb_works         = []
-                    st.session_state.mb_title_filter  = title_filter
+                    st.session_state.mb_composers = composers
+                    st.session_state.mb_works = []
+                    st.session_state.mb_checked = {}
                     st.session_state.mb_selected_comp = None
+                    st.session_state.mb_work_title_filter = ""
                     if not composers and not err:
                         st.warning("作曲家が見つかりませんでした。")
                 else:
                     st.warning("作曲家名を入力してください")
 
+            selected_comp = st.session_state.get("mb_selected_comp")
             if st.session_state.get("mb_composers"):
-                composers   = st.session_state.mb_composers
+                composers = st.session_state.mb_composers
                 comp_labels = [
-                    f"{c['name']}" + (f"（{c['disambiguation']}）" if c['disambiguation'] else "") + (f" [{c['life_span']}–]" if c['life_span'] else "")
+                    f"{c['name']}"
+                    + (f"（{c['disambiguation']}）" if c['disambiguation'] else "")
+                    + (f" [{c['life_span']}–]" if c['life_span'] else "")
                     for c in composers
                 ]
-                selected_idx = st.radio("作曲家を選択", range(len(comp_labels)), format_func=lambda i: comp_labels[i], key="mb_comp_radio")
-                if st.button("この作曲家の作品一覧を取得", key="mb_fetch_works"):
-                    selected_comp = composers[selected_idx]
-                    st.session_state.mb_selected_comp = selected_comp
-                    with st.spinner(f"{selected_comp['name']} の作品を取得中...（数分かかることがあります）"):
-                        works = search_mb_works(selected_comp["id"], st.session_state.mb_title_filter)
-                    st.session_state.mb_works   = works
+                selected_idx = st.radio(
+                    "2. 作曲家を特定",
+                    range(len(comp_labels)),
+                    format_func=lambda i: comp_labels[i],
+                    key="mb_comp_radio",
+                )
+                if st.button("✅ この作曲家で進める", key="mb_pick_comp"):
+                    st.session_state.mb_selected_comp = composers[selected_idx]
+                    st.session_state.mb_works = []
+                    st.session_state.mb_checked = {}
+                    st.rerun()
+                selected_comp = st.session_state.get("mb_selected_comp")
+                if selected_comp:
+                    st.success(f"作曲家を確定: {selected_comp.get('name', '')}")
+
+            if selected_comp:
+                work_title_filter = st.text_input(
+                    "3. 検索ワード（曲名）",
+                    key="mb_work_title_filter",
+                    placeholder="例: Symphony no.5 / Piano Concerto",
+                )
+                col_work_search, col_work_all = st.columns([1, 1])
+                if col_work_search.button("🔍 曲名で検索", key="mb_fetch_works"):
+                    if not work_title_filter.strip():
+                        st.warning("曲名の検索ワードを入力してください。")
+                    else:
+                        st.session_state.mb_title_filter = work_title_filter.strip()
+                        with st.spinner(f"{selected_comp['name']} の作品を検索中..."):
+                            works = search_mb_works(selected_comp["id"], work_title_filter.strip())
+                        st.session_state.mb_works = works
+                        st.session_state.mb_checked = {}
+                if col_work_all.button("📚 全作品を取得（重い）", key="mb_fetch_works_all"):
+                    st.session_state.mb_title_filter = ""
+                    with st.spinner(f"{selected_comp['name']} の全作品を取得中...（数分かかることがあります）"):
+                        works = search_mb_works(selected_comp["id"], "")
+                    st.session_state.mb_works = works
                     st.session_state.mb_checked = {}
 
             if st.session_state.get("mb_works"):
@@ -3690,11 +3757,21 @@ if mode == "新規登録":
                 with c2:
                     jp_cols = st.columns([4, 1])
                     with jp_cols[0]:
-                        final_jp = clearable_text_input("日本語タイトル（修正可）", "final_jp", value=reg.get("jp_input") or "")
+                        final_jp = clearable_text_input(
+                            "日本語タイトル（修正可）",
+                            "final_jp",
+                            value=reg.get("jp_input") or "",
+                            refresh_on_value_change=True,
+                        )
                     with jp_cols[1]:
                         can_jp_search = media_label in ("映画", "ドラマ", "アニメ", "音楽アルバム", "ゲーム")
                         jp_search_clicked = st.button("日本語タイトルを検索", key="search_jp_title", disabled=not can_jp_search)
-                    final_en = clearable_text_input("英語タイトル（修正可）", "final_en", value=reg["cand_en"])
+                    final_en = clearable_text_input(
+                        "英語タイトル（修正可）",
+                        "final_en",
+                        value=reg["cand_en"],
+                        refresh_on_value_change=True,
+                    )
                     jp_feedback = st.session_state.pop("jp_search_feedback", "")
                     if jp_feedback:
                         st.info(jp_feedback)
@@ -5061,9 +5138,9 @@ if mode == "データ管理":
             with st.expander("🔗 関連", expanded=False):
               if page_media in ("出演", "演奏曲"):
                 rel_prop = "演奏曲" if page_media == "出演" else "出演履歴"
-                target_pages = _get_score_pages() if page_media == "出演" else _get_performance_pages()
+                rel_target_pages = _get_score_pages() if page_media == "出演" else _get_performance_pages()
                 rel_state_key = f"edit_rel_{page_id}"
-                id_to_title = {p["id"]: p["title"] for p in target_pages}
+                id_to_title = {p["id"]: p["title"] for p in rel_target_pages}
                 live_page = _get_page_from_state_or_api(page_id, force_api=True)
                 live_props = (live_page or {}).get("properties", {}) or props
 
@@ -5092,14 +5169,14 @@ if mode == "データ管理":
                     if missing_ids:
                         st.session_state[rel_state_key].extend(build_rel_items(missing_ids))
                 if st.button("🔄 関連候補を再読み込み", key=f"edit_rel_reload_{page_id}"):
-                    target_pages = _get_score_pages(force_refresh=True) if page_media == "出演" else _get_performance_pages(force_refresh=True)
+                    rel_target_pages = _get_score_pages(force_refresh=True) if page_media == "出演" else _get_performance_pages(force_refresh=True)
                     refreshed_page = _get_page_from_state_or_api(page_id, force_api=True)
                     refreshed_props = (refreshed_page or {}).get("properties", {}) or props
                     refreshed_rel_ids = [r.get("id") for r in ((refreshed_props.get(rel_prop) or {}).get("relation", [])) if r.get("id")]
                     alt_prop = "出演履歴" if rel_prop == "演奏曲" else "演奏曲"
                     refreshed_alt_ids = [r.get("id") for r in ((refreshed_props.get(alt_prop) or {}).get("relation", [])) if r.get("id")]
                     refreshed_rel_ids = _clean_relation_ids(refreshed_rel_ids + refreshed_alt_ids)
-                    id_to_title = {p["id"]: p["title"] for p in target_pages}
+                    id_to_title = {p["id"]: p["title"] for p in rel_target_pages}
                     st.session_state[rel_state_key] = build_rel_items(refreshed_rel_ids)
                     st.rerun()
 
@@ -5111,9 +5188,9 @@ if mode == "データ管理":
                 rel_matches = []
                 if rel_query:
                     q = rel_query.strip().lower()
-                    rel_matches = [p for p in target_pages if q in (p.get("title") or "").strip().lower()]
+                    rel_matches = [p for p in rel_target_pages if q in (p.get("title") or "").strip().lower()]
                 else:
-                    rel_matches = target_pages[:20]
+                    rel_matches = rel_target_pages[:20]
 
                 def add_rel(pid, title):
                     selected = st.session_state[rel_state_key]
