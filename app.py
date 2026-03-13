@@ -31,7 +31,7 @@ NOTION_HEADERS = {
 
 DEFAULT_TIMEOUT = 20
 REFRESH_BATCH_SIZE = 20
-APP_VERSION = "7.08"
+APP_VERSION = "7.09"
 
 # ============================================================
 # 媒体マッピング
@@ -61,6 +61,12 @@ RATING_OPTIONS = ["", "★", "★★", "★★★", "★★★★", "★★★�
 def get_media_icon_url(media_label: str) -> str:
     normalized = MEDIA_LABEL_ALIASES.get(media_label, media_label)
     return MEDIA_ICON_MAP.get(normalized, ("", ""))[1]
+
+def is_media_icon_url(url: str | None) -> bool:
+    if not url:
+        return False
+    icon_urls = {v[1] for v in MEDIA_ICON_MAP.values() if len(v) > 1 and v[1]}
+    return url in icon_urls
 
 ASSET_BASE_URL = "https://raw.githubusercontent.com/attituderko-design/artemis-cers/main/assets"
 
@@ -2146,7 +2152,8 @@ def create_notion_page(jp_title: str, en_title: str, media_type_label: str,
         "icon":       {"type": "external", "external": {"url": icon_url}},
         "properties": properties,
     }
-    if cover_url:
+    # 媒体アイコンURLは cover には使わず、icon のみ適用する
+    if cover_url and not is_media_icon_url(cover_url):
         payload["cover"] = {"type": "external", "external": {"url": cover_url}}
     res = api_request("post", "https://api.notion.com/v1/pages", headers=NOTION_HEADERS, json=payload)
     if res is None:
