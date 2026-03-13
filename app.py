@@ -31,7 +31,7 @@ NOTION_HEADERS = {
 
 DEFAULT_TIMEOUT = 20
 REFRESH_BATCH_SIZE = 20
-APP_VERSION = "7.05"
+APP_VERSION = "7.07"
 
 # ============================================================
 # 媒体マッピング
@@ -2446,6 +2446,8 @@ if is_drive_skip_mode():
     st.info("⏭ Driveデータスキップ機能ON: Drive保存/照合はスキップして動作中です。")
 if "pending_notice" in st.session_state:
     st.success(st.session_state.pop("pending_notice"))
+    # 新規作成直後は先頭へスクロールしてフォーカスされた編集カードを見つけやすくする
+    st.components.v1.html("<script>window.parent.scrollTo(0, 0);</script>", height=0)
 
 for key, default in {
     "is_running":         False,
@@ -2645,6 +2647,8 @@ if not st.session_state.pages_loaded:
     st.stop()
 
 target_pages = st.session_state.pages
+if st.session_state.get("pending_focus_page_id"):
+    mode = "データ管理"
 
 # ============================================================
 # 新規登録モード
@@ -4694,6 +4698,10 @@ if mode == "データ管理":
     if pending_focus_id:
         st.session_state.focus_page_id = pending_focus_id
     focus_id = st.session_state.get("focus_page_id")
+    if focus_id and not any(p.get("id") == focus_id for p in display_pages):
+        focus_page = next((p for p in target_pages if p.get("id") == focus_id), None)
+        if focus_page is not None:
+            display_pages = [focus_page] + display_pages
     if focus_id:
         display_pages = sorted(display_pages, key=lambda p: 0 if p.get("id") == focus_id else 1)
         st.session_state.manual_page = 0
