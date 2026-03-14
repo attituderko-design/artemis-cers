@@ -48,7 +48,7 @@ NOTION_HEADERS = {
 
 DEFAULT_TIMEOUT = 20
 REFRESH_BATCH_SIZE = 20
-APP_VERSION = "9.37"
+APP_VERSION = "9.38"
 
 # ============================================================
 # 媒体マッピング
@@ -2468,6 +2468,40 @@ def search_game_jp_title_precise(en_title: str) -> str:
     return ""
 
 @st.cache_data(ttl=86400)
+def search_game_jp_title_from_query(jp_query: str, en_title: str = "") -> str:
+    q = (jp_query or "").strip()
+    if not q:
+        return ""
+    probes = [q, f"{q} ゲーム"]
+    en = (en_title or "").lower()
+    if "the legend of zelda" in en:
+        probes.extend([f"ゼルダの伝説 {q}", "ゼルダの伝説 ブレス オブ ザ ワイルド" if "breath of the wild" in en else ""])
+    probes = [p for p in _dedupe_keep_order(probes) if p]
+    try:
+        for p in probes:
+            res = requests.get(
+                "https://ja.wikipedia.org/w/api.php",
+                params={
+                    "action": "query",
+                    "list": "search",
+                    "srsearch": p,
+                    "srlimit": 3,
+                    "format": "json",
+                },
+                timeout=DEFAULT_TIMEOUT,
+            )
+            if res.status_code != 200:
+                continue
+            items = res.json().get("query", {}).get("search", []) or []
+            if items:
+                t = (items[0].get("title") or "").strip()
+                if t:
+                    return t
+    except Exception:
+        return ""
+    return ""
+
+@st.cache_data(ttl=86400)
 def _wiki_page_image_from_title(title: str, lang: str = "ja") -> str:
     t = (title or "").strip()
     if not t:
@@ -2629,7 +2663,7 @@ def _search_games_for_ui(query: str, include_images: bool = False) -> list:
         en_title = (cand.get("title") or "").strip()
         row = dict(cand)
         # 作品一覧表示は軽量化のためJP逆引きを遅延（確定時に実施）
-        row["jp_title"] = q if _contains_japanese(q) else ""
+        row["jp_title"] = ""
         row["series_title"] = _derive_game_series_title(en_title)
         row["variant_label"] = _game_variant_label(en_title)
         if include_images:
@@ -5260,6 +5294,8 @@ if mode == "新規登録":
                             elif media_label == "ゲーム":
                                 title = reg.get("cand_en") or reg.get("jp_input") or ""
                                 new_jp = search_game_jp_title_precise(title)
+                                if not new_jp:
+                                    new_jp = search_game_jp_title_from_query(reg.get("jp_input") or "", title)
 
                             if new_jp:
                                 current_jp = (reg.get("jp_input") or "").strip()
@@ -5509,6 +5545,7 @@ if mode == "新規登録":
                             picked_jp = (
                                 selected_work.get("jp_title")
                                 or search_game_jp_title_precise(selected_work.get("title", ""))
+                                or search_game_jp_title_from_query(user_jp_query, selected_work.get("title", ""))
                                 or (user_jp_query if _contains_japanese(user_jp_query) else "")
                                 or selected_work.get("title", "")
                             )
@@ -5528,6 +5565,7 @@ if mode == "新規登録":
                             picked_jp = (
                                 selected_work.get("jp_title")
                                 or search_game_jp_title_precise(selected_work.get("title", ""))
+                                or search_game_jp_title_from_query(user_jp_query, selected_work.get("title", ""))
                                 or (user_jp_query if _contains_japanese(user_jp_query) else "")
                                 or selected_work.get("title", "")
                             )
