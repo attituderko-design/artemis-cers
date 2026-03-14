@@ -48,7 +48,7 @@ NOTION_HEADERS = {
 
 DEFAULT_TIMEOUT = 20
 REFRESH_BATCH_SIZE = 20
-APP_VERSION = "9.24"
+APP_VERSION = "9.25"
 
 # ============================================================
 # 媒体マッピング
@@ -1623,6 +1623,8 @@ def search_games(query: str) -> list:
         bad_words = [
             "patch", "mod", "multiplayer", "mottzilla", "unreal engine",
             "bonus disc", "master quest", "second wind", "netherforce",
+            "expansion pass", "dlc", "season pass", "bundle", "collector's edition",
+            "definitive edition", "complete edition",
         ]
         lowered = (title or "").lower()
         for bw in bad_words:
@@ -1721,23 +1723,28 @@ def search_games(query: str) -> list:
         for qv in _jp_game_query_variants(q):
             if qv not in queries:
                 queries.append(qv)
-        # 日本語クエリは、派生形ごとに英題ヒントを引く（1発失敗を避ける）
-        for qv in _jp_game_query_variants(q):
-            en_try = _wikipedia_en_title_from_japanese(qv)
-            if en_try:
-                en_hint = en_try
-                break
+        # 日本語クエリは、Wikipedia言語リンクから英題候補を複数取り込む
+        en_title_candidates = _wikipedia_en_title_candidates_from_japanese(q, limit=8)
+        if en_title_candidates:
+            en_hint = en_title_candidates[0]
+        # 旧フォールバック（単一候補）
+        if not en_hint:
+            for qv in _jp_game_query_variants(q):
+                en_try = _wikipedia_en_title_from_japanese(qv)
+                if en_try:
+                    en_hint = en_try
+                    break
         if en_hint and en_hint not in queries:
             queries.append(en_hint)
             for c in _build_wiki_title_candidates(en_hint):
                 if c not in queries:
                     queries.append(c)
-        if "ゼルダ" in q and "The Legend of Zelda" not in queries:
-            queries.append("The Legend of Zelda")
-        if "ゼルダ" in q and ("ブレス" in q or "ワイルド" in q):
-            for zq in ["breath of the wild", "the legend of zelda breath of the wild"]:
-                if zq not in queries:
-                    queries.append(zq)
+        for en_title in en_title_candidates:
+            if en_title not in queries:
+                queries.append(en_title)
+            for c in _build_wiki_title_candidates(en_title):
+                if c not in queries:
+                    queries.append(c)
     if q.lower().startswith("the "):
         queries.append(q[4:].strip())
     all_results, seen = [], set()
@@ -2154,6 +2161,58 @@ def _wikipedia_en_title_from_japanese(title: str) -> str:
     except Exception:
         return ""
     return ""
+
+@st.cache_data(ttl=86400)
+def _wikipedia_en_title_candidates_from_japanese(title: str, limit: int = 8) -> list[str]:
+    q = (title or "").strip()
+    if not q:
+        return []
+    out, seen = [], set()
+    try:
+        ja_res = requests.get(
+            "https://ja.wikipedia.org/w/api.php",
+            params={
+                "action": "query",
+                "list": "search",
+                "srsearch": q,
+                "srlimit": max(1, min(limit, 10)),
+                "format": "json",
+            },
+            timeout=DEFAULT_TIMEOUT,
+        )
+        if ja_res.status_code != 200:
+            return []
+        items = ja_res.json().get("query", {}).get("search", [])
+        for item in items:
+            page_title = (item.get("title") or "").strip()
+            if not page_title:
+                continue
+            ll_res = requests.get(
+                "https://ja.wikipedia.org/w/api.php",
+                params={
+                    "action": "query",
+                    "prop": "langlinks",
+                    "lllang": "en",
+                    "titles": page_title,
+                    "format": "json",
+                },
+                timeout=DEFAULT_TIMEOUT,
+            )
+            if ll_res.status_code != 200:
+                continue
+            pages = ll_res.json().get("query", {}).get("pages", {})
+            for page in pages.values():
+                langlinks = page.get("langlinks", [])
+                for ll in langlinks:
+                    en = (ll.get("*") or "").strip()
+                    if en and en not in seen:
+                        out.append(en)
+                        seen.add(en)
+                        if len(out) >= limit:
+                            return out
+    except Exception:
+        return out
+    return out
 
 def fetch_album_by_id(collection_id: int) -> dict | None:
     res = requests.get(
