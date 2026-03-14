@@ -1,4 +1,5 @@
 import re
+import json
 import requests
 import time
 import streamlit as st
@@ -48,7 +49,8 @@ NOTION_HEADERS = {
 
 DEFAULT_TIMEOUT = 20
 REFRESH_BATCH_SIZE = 20
-APP_VERSION = "9.43"
+APP_VERSION = "9.44"
+GAME_JP_LEARNED_MAP_PATH = Path("data/game_jp_learned.json")
 
 # ============================================================
 # 媒体マッピング
@@ -1658,13 +1660,39 @@ def search_games(query: str) -> list:
                 seen.add(v)
         return out
 
+    def _extract_jp_name_from_igdb_item(item: dict) -> tuple[str, str, str]:
+        # 1) game_localizations（最優先）
+        for loc in item.get("game_localizations", []) or []:
+            name = (loc.get("name") or "").strip() if isinstance(loc, dict) else ""
+            if name and _contains_japanese(name):
+                return name, "IGDB-localization", "高"
+        # 2) alternative_names（commentに日本語注記があれば優先）
+        jp_with_tag = []
+        jp_plain = []
+        for alt in item.get("alternative_names", []) or []:
+            if not isinstance(alt, dict):
+                continue
+            name = (alt.get("name") or "").strip()
+            comment = (alt.get("comment") or "").strip().lower()
+            if not name or not _contains_japanese(name):
+                continue
+            if any(k in comment for k in ["japanese", "japan", "日本", "jp title", "jp"]):
+                jp_with_tag.append(name)
+            else:
+                jp_plain.append(name)
+        if jp_with_tag:
+            return jp_with_tag[0], "IGDB-alt(JP注記)", "高"
+        if jp_plain:
+            return jp_plain[0], "IGDB-alt", "中"
+        return "", "", ""
+
     def _search_igdb_once(q: str, headers: dict) -> list:
         safe_q = (q or "").replace('"', "").strip()
         if not safe_q:
             return []
         bodies = [
-            f'search "{safe_q}"; fields name,alternative_names.name,cover.url,first_release_date,genres.name,involved_companies.company.name,involved_companies.developer,involved_companies.publisher,platforms.name,summary,total_rating_count,rating,category; limit 100;',
-            f'fields name,alternative_names.name,cover.url,first_release_date,genres.name,involved_companies.company.name,involved_companies.developer,involved_companies.publisher,platforms.name,summary,total_rating_count,rating,category; where name ~ *"{safe_q}"*; limit 100;',
+            f'search "{safe_q}"; fields name,alternative_names.name,alternative_names.comment,game_localizations.name,game_localizations.region,cover.url,first_release_date,genres.name,involved_companies.company.name,involved_companies.developer,involved_companies.publisher,platforms.name,summary,total_rating_count,rating,category; limit 100;',
+            f'fields name,alternative_names.name,alternative_names.comment,game_localizations.name,game_localizations.region,cover.url,first_release_date,genres.name,involved_companies.company.name,involved_companies.developer,involved_companies.publisher,platforms.name,summary,total_rating_count,rating,category; where name ~ *"{safe_q}"*; limit 100;',
         ]
         raw_items = []
         for body in bodies:
@@ -1698,12 +1726,14 @@ def search_games(query: str) -> list:
                     developer = name
                 if c.get("publisher"):
                     publisher = name
-            alt_titles = [a.get("name", "") for a in item.get("alternative_names", []) if a.get("name")]
-            jp_alt = next((t for t in alt_titles if _contains_japanese(t)), "")
+            alt_titles = [a.get("name", "") for a in item.get("alternative_names", []) if isinstance(a, dict) and a.get("name")]
+            jp_name, jp_source, jp_conf = _extract_jp_name_from_igdb_item(item)
             rows.append({
                 "id":          item["id"],
                 "title":       item.get("name", ""),
-                "jp_title":    jp_alt,
+                "jp_title":    jp_name,
+                "jp_source":   jp_source,
+                "jp_confidence": jp_conf,
                 "cover_url":   cover_url,
                 "release":     release_year,
                 "genres":      genres,
@@ -2508,6 +2538,9 @@ def search_game_jp_title_precise(en_title: str) -> str:
     title = (en_title or "").strip()
     if not title:
         return ""
+    learned = _lookup_game_jp_learned(title)
+    if learned:
+        return learned
     key = _norm_game_title_key(title)
     if key in GAME_TITLE_JP_MANUAL:
         return GAME_TITLE_JP_MANUAL[key]
@@ -2667,6 +2700,60 @@ def _norm_game_title_key(title: str) -> str:
     t = (title or "").strip().lower()
     t = re.sub(r"\s+", " ", t)
     return t
+
+
+def _load_game_jp_learned_map() -> dict[str, str]:
+    try:
+        if GAME_JP_LEARNED_MAP_PATH.exists():
+            data = json.loads(GAME_JP_LEARNED_MAP_PATH.read_text(encoding="utf-8"))
+            if isinstance(data, dict):
+                return {str(k): str(v) for k, v in data.items() if str(k).strip() and str(v).strip()}
+    except Exception:
+        pass
+    return {}
+
+
+def _get_game_jp_learned_map() -> dict[str, str]:
+    key = "_game_jp_learned_map"
+    if key not in st.session_state:
+        st.session_state[key] = _load_game_jp_learned_map()
+    return st.session_state[key]
+
+
+def _lookup_game_jp_learned(en_title: str) -> str:
+    title = (en_title or "").strip()
+    if not title:
+        return ""
+    learned = _get_game_jp_learned_map()
+    if not learned:
+        return ""
+    key = _norm_game_title_key(title)
+    if key in learned:
+        return learned[key]
+    base = re.sub(r"\s*-\s*[^-]*(edition|bundle|collection|pack).*$", "", title, flags=re.IGNORECASE).strip()
+    base_key = _norm_game_title_key(base)
+    return learned.get(base_key, "")
+
+
+def _learn_game_jp_title(en_title: str, jp_title: str) -> None:
+    en = (en_title or "").strip()
+    jp = (jp_title or "").strip()
+    if not en or not jp or not _contains_japanese(jp):
+        return
+    key = _norm_game_title_key(en)
+    learned = dict(_get_game_jp_learned_map())
+    if learned.get(key) == jp:
+        return
+    learned[key] = jp
+    st.session_state["_game_jp_learned_map"] = learned
+    try:
+        GAME_JP_LEARNED_MAP_PATH.parent.mkdir(parents=True, exist_ok=True)
+        GAME_JP_LEARNED_MAP_PATH.write_text(
+            json.dumps(learned, ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+    except Exception:
+        pass
 
 def _expand_game_query_aliases(query: str) -> list[str]:
     q = (query or "").strip()
@@ -5552,6 +5639,8 @@ if mode == "新規登録":
                                     anilist_id=reg.get("anilist_id"),
                                 )
                                 if ok:
+                                    if reg["media_type"] == "game":
+                                        _learn_game_jp_title(final_en, final_jp)
                                     if reg["media_type"] in ("movie", "tv"):
                                         save_to_drive(reg["cover_url"], final_jp or final_en, reg["tmdb_id"])
                                     st.session_state.confirm_reg        = None
@@ -5670,22 +5759,38 @@ if mode == "新規登録":
                             work_list = work_list[:max_show]
                         if work_list:
                             user_jp_query = (st.session_state.get("inp_jp_main") or st.session_state.get("last_game_query_jp") or "").strip()
-                            jp_labels = []
+                            jp_infos = []
                             for w in work_list:
                                 en_t = w.get("title", "")
                                 jp_t = (
                                     w.get("jp_title")
                                     or search_game_jp_title_precise(en_t)
+                                    or search_game_jp_title_from_query(user_jp_query, en_t)
                                 )
-                                jp_labels.append(jp_t if jp_t else "（JP未解決）")
+                                src = (w.get("jp_source") or "").strip()
+                                conf = (w.get("jp_confidence") or "").strip()
+                                if not src and jp_t:
+                                    src = "Wikipedia/Wikidata"
+                                    conf = conf or "中"
+                                if jp_t and not conf:
+                                    conf = "中"
+                                jp_infos.append(
+                                    {
+                                        "jp": jp_t if jp_t else "（JP未解決）",
+                                        "src": src if jp_t else "",
+                                        "conf": conf if jp_t else "",
+                                    }
+                                )
                             pick_idx = st.radio(
                                 "作品を選択",
                                 options=list(range(len(work_list))),
-                                format_func=lambda i: f"{jp_labels[i]}  /  {work_list[i].get('title','')}  /  {work_list[i].get('release','不明')}  /  {('・'.join((work_list[i].get('platforms') or [])[:3]) or 'ハード不明')}  /  {work_list[i].get('variant_label') or _game_variant_label(work_list[i].get('title',''))}",
+                                format_func=lambda i: f"{jp_infos[i]['jp']}  /  {work_list[i].get('title','')}  /  {work_list[i].get('release','不明')}  /  {('・'.join((work_list[i].get('platforms') or [])[:3]) or 'ハード不明')}  /  {work_list[i].get('variant_label') or _game_variant_label(work_list[i].get('title',''))}{('  /  ' + jp_infos[i]['src'] + '・' + jp_infos[i]['conf']) if jp_infos[i].get('src') else ''}",
                                 key="game_work_pick",
                             )
                             picked = dict(work_list[pick_idx])
-                            picked["jp_title"] = jp_labels[pick_idx] if jp_labels[pick_idx] != "（JP未解決）" else picked.get("jp_title", "")
+                            picked["jp_title"] = jp_infos[pick_idx]["jp"] if jp_infos[pick_idx]["jp"] != "（JP未解決）" else picked.get("jp_title", "")
+                            picked["jp_source"] = jp_infos[pick_idx].get("src", "")
+                            picked["jp_confidence"] = jp_infos[pick_idx].get("conf", "")
                             if st.button("🖼 画像候補を取得", key="game_fetch_cover_cands"):
                                 q_hint = (st.session_state.get("inp_en_main") or st.session_state.get("inp_jp_main") or "")
                                 cands = _build_game_cover_candidates(picked, query_hint=q_hint)
@@ -5697,6 +5802,8 @@ if mode == "新規登録":
                             st.info("絞り込み条件に一致する作品がありません。")
                     selected_work = st.session_state.get("game_work_selected")
                     if selected_work:
+                        if selected_work.get("jp_source"):
+                            st.caption(f"JP候補ソース: {selected_work.get('jp_source')}（信頼度: {selected_work.get('jp_confidence') or '中'}）")
                         cover_cands = selected_work.get("cover_candidates") or []
                         if cover_cands:
                             cv_idx = st.selectbox(
@@ -6047,6 +6154,8 @@ if mode == "新規登録":
                                 relation_ids=item.get("relation_ids"),
                             )
                             if ok:
+                                if item["media_type"] == "game":
+                                    _learn_game_jp_title(item.get("en_title", ""), item.get("jp_title", ""))
                                 if item["media_type"] in ("movie", "tv"):
                                     save_to_drive(item["cover_url"], item["jp_title"] or item.get("en_title",""), item["tmdb_id"])
                                 success_count += 1
