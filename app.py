@@ -49,7 +49,7 @@ NOTION_HEADERS = {
 
 DEFAULT_TIMEOUT = 20
 REFRESH_BATCH_SIZE = 20
-APP_VERSION = "9.56"
+APP_VERSION = "9.57"
 GAME_JP_LEARNED_MAP_PATH = Path("data/game_jp_learned.json")
 WIKIMEDIA_HEADERS = {
     "User-Agent": "ArteMisCERS/9.x (metadata resolver; contact: app operator)",
@@ -84,6 +84,11 @@ MEDIA_LABEL_ALIASES = {
 }
 
 RATING_OPTIONS = ["", "★", "★★", "★★★", "★★★★", "★★★★★"]
+
+
+def queue_new_search_from_enter() -> None:
+    # 新規登録>検索タブで Enter されたら検索実行フラグを立てる
+    st.session_state["_pending_new_search_enter"] = True
 
 def get_media_icon_url(media_label: str) -> str:
     normalized = MEDIA_LABEL_ALIASES.get(media_label, media_label)
@@ -5616,6 +5621,7 @@ if mode == "新規登録":
             reg_cart_hint = st.session_state.get("reg_cart", [])
             if reg_cart_hint:
                 st.info(f"🧺 登録リストに {len(reg_cart_hint)} 件あります。右の「登録リスト」タブで確認できます。")
+            enter_search_kwargs = {"on_change": queue_new_search_from_enter}
 
             fast_book_search = True
             if media_label in ("書籍", "漫画"):
@@ -5623,24 +5629,24 @@ if mode == "新規登録":
 
             if media_label in ["音楽アルバム"]:
                 col_jp, col_en = st.columns([1, 1])
-                jp_input      = clearable_text_input("アルバム名", "inp_jp_album", placeholder="例: 千のナイフ", container=col_jp)
-                creator_input = clearable_text_input("アーティスト名", "inp_creator_album", placeholder="例: 坂本龍一", container=col_en)
+                jp_input      = clearable_text_input("アルバム名", "inp_jp_album", placeholder="例: 千のナイフ", container=col_jp, **enter_search_kwargs)
+                creator_input = clearable_text_input("アーティスト名", "inp_creator_album", placeholder="例: 坂本龍一", container=col_en, **enter_search_kwargs)
                 cast_input    = ""
                 en_input      = ""
             elif media_label == "ゲーム":
-                jp_input      = clearable_text_input("ゲームタイトル", "inp_jp_game", placeholder="例: ペルソナ5")
+                jp_input      = clearable_text_input("ゲームタイトル", "inp_jp_game", placeholder="例: ペルソナ5", **enter_search_kwargs)
                 creator_input = ""
                 cast_input    = ""
                 en_input      = jp_input
             elif media_label == "アニメ":
-                jp_input      = clearable_text_input("アニメタイトル", "inp_jp_anime", placeholder="例: 鬼滅の刃 / Demon Slayer")
+                jp_input      = clearable_text_input("アニメタイトル", "inp_jp_anime", placeholder="例: 鬼滅の刃 / Demon Slayer", **enter_search_kwargs)
                 creator_input = ""
                 cast_input    = ""
                 en_input      = jp_input
             elif media_label == "漫画":
                 col_jp, col_en = st.columns([1, 1])
-                jp_input      = clearable_text_input("タイトル", "inp_jp_manga", placeholder="例: 鬼滅の刃", container=col_jp)
-                creator_input = clearable_text_input("著者名", "inp_creator_manga", placeholder="例: 吾峠呼世晴", container=col_en)
+                jp_input      = clearable_text_input("タイトル", "inp_jp_manga", placeholder="例: 鬼滅の刃", container=col_jp, **enter_search_kwargs)
+                creator_input = clearable_text_input("著者名", "inp_creator_manga", placeholder="例: 吾峠呼世晴", container=col_en, **enter_search_kwargs)
                 cast_input    = ""
                 en_input      = ""
             else:
@@ -5659,13 +5665,15 @@ if mode == "新規登録":
                     creator_ph = "例: 恩田陸"
                     cast_ph = "例: 出版社名（任意）"
                 col_jp, col_en = st.columns([1, 1])
-                jp_input      = clearable_text_input("日本語タイトル", "inp_jp_main", placeholder=jp_ph, container=col_jp)
-                en_input      = clearable_text_input("英語タイトル（検索用）", "inp_en_main", placeholder=en_ph, container=col_en)
+                jp_input      = clearable_text_input("日本語タイトル", "inp_jp_main", placeholder=jp_ph, container=col_jp, **enter_search_kwargs)
+                en_input      = clearable_text_input("英語タイトル（検索用）", "inp_en_main", placeholder=en_ph, container=col_en, **enter_search_kwargs)
                 col_creator, col_cast = st.columns([1, 1])
-                creator_input = clearable_text_input("クリエイター（著者・監督）", "inp_creator_main", placeholder=creator_ph, container=col_creator)
-                cast_input    = clearable_text_input("キャスト・関係者", "inp_cast_main", placeholder=cast_ph, container=col_cast)
+                creator_input = clearable_text_input("クリエイター（著者・監督）", "inp_creator_main", placeholder=creator_ph, container=col_creator, **enter_search_kwargs)
+                cast_input    = clearable_text_input("キャスト・関係者", "inp_cast_main", placeholder=cast_ph, container=col_cast, **enter_search_kwargs)
 
-            if st.button("🔍 検索", key="new_search"):
+            search_clicked = st.button("🔍 検索", key="new_search")
+            search_from_enter = bool(st.session_state.pop("_pending_new_search_enter", False))
+            if search_clicked or search_from_enter:
                 query = en_input if en_input else jp_input
                 if query or creator_input or cast_input:
                     if media_label == "書籍":
