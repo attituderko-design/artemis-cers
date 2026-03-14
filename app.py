@@ -49,7 +49,7 @@ NOTION_HEADERS = {
 
 DEFAULT_TIMEOUT = 20
 REFRESH_BATCH_SIZE = 20
-APP_VERSION = "9.44"
+APP_VERSION = "9.45"
 GAME_JP_LEARNED_MAP_PATH = Path("data/game_jp_learned.json")
 
 # ============================================================
@@ -2593,9 +2593,6 @@ def search_game_jp_title_from_query(jp_query: str, en_title: str = "") -> str:
     if not q:
         return ""
     probes = [q, f"{q} ゲーム"]
-    en = (en_title or "").lower()
-    if "the legend of zelda" in en:
-        probes.append(f"ゼルダの伝説 {q}")
     probes = [p for p in _dedupe_keep_order(probes) if p]
     try:
         for p in probes:
@@ -2690,9 +2687,7 @@ def _dedupe_keep_order(seq: list[str]) -> list[str]:
             seen.add(x)
     return out
 
-GAME_QUERY_ALIASES = {
-    "ゼルダ": ["ゼルダの伝説", "The Legend of Zelda"],
-}
+GAME_QUERY_ALIASES = {}
 
 GAME_TITLE_JP_MANUAL = {}
 
@@ -2769,9 +2764,6 @@ def _derive_game_series_title(title: str) -> str:
     t = (title or "").strip()
     if not t:
         return "その他"
-    low = t.lower()
-    if low.startswith("the legend of zelda"):
-        return "The Legend of Zelda"
     if ":" in t:
         return t.split(":", 1)[0].strip()
     return t
@@ -5368,7 +5360,7 @@ if mode == "新規登録":
                 cast_input    = ""
                 en_input      = ""
             elif media_label == "ゲーム":
-                jp_input      = clearable_text_input("ゲームタイトル", "inp_jp_game", placeholder="例: ゼルダの伝説")
+                jp_input      = clearable_text_input("ゲームタイトル", "inp_jp_game", placeholder="例: ペルソナ5")
                 creator_input = ""
                 cast_input    = ""
                 en_input      = jp_input
@@ -5748,7 +5740,7 @@ if mode == "新規登録":
                         game_work_filter = st.text_input(
                             "作品名で絞り込み（任意）",
                             key="game_work_filter",
-                            placeholder="例: Breath of the Wild",
+                            placeholder="例: Persona",
                         )
                         if game_work_filter.strip():
                             gf = game_work_filter.strip().lower()
