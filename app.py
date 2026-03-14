@@ -49,7 +49,7 @@ NOTION_HEADERS = {
 
 DEFAULT_TIMEOUT = 20
 REFRESH_BATCH_SIZE = 20
-APP_VERSION = "9.46"
+APP_VERSION = "9.47"
 GAME_JP_LEARNED_MAP_PATH = Path("data/game_jp_learned.json")
 
 # ============================================================
@@ -2600,11 +2600,13 @@ def resolve_game_jp_titles_bulk(en_titles: tuple[str, ...]) -> dict[str, str]:
     if not titles:
         return {}
     out: dict[str, str] = {}
+    out_norm: dict[str, str] = {}
     # 1) learned cache
     for t in titles:
         learned = _lookup_game_jp_learned(t)
         if learned:
             out[t] = learned
+            out_norm[_norm_game_title_key(t)] = learned
     unresolved = [t for t in titles if t not in out]
     if not unresolved:
         return out
@@ -2619,6 +2621,7 @@ def resolve_game_jp_titles_bulk(en_titles: tuple[str, ...]) -> dict[str, str]:
                     "action": "query",
                     "prop": "langlinks",
                     "lllang": "ja",
+                    "lllimit": "max",
                     "redirects": 1,
                     "titles": "|".join(part),
                     "format": "json",
@@ -2638,8 +2641,25 @@ def resolve_game_jp_titles_bulk(en_titles: tuple[str, ...]) -> dict[str, str]:
                 ja = (ll[0].get("*") or "").strip()
                 if ja:
                     out[en_title] = ja
+                    out_norm[_norm_game_title_key(en_title)] = ja
     except Exception:
         pass
+    # 3) 正規化キーで再照合
+    for t in titles:
+        if t in out:
+            continue
+        ja = out_norm.get(_norm_game_title_key(t), "")
+        if ja:
+            out[t] = ja
+    # 4) それでも未解決なら限定件数で個別精査（精度優先）
+    still = [t for t in titles if t not in out]
+    for t in still[:30]:
+        try:
+            ja = search_game_jp_title_precise(t)
+            if ja:
+                out[t] = ja
+        except Exception:
+            continue
     return out
 
 @st.cache_data(ttl=86400)
