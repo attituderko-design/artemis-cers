@@ -48,7 +48,7 @@ NOTION_HEADERS = {
 
 DEFAULT_TIMEOUT = 20
 REFRESH_BATCH_SIZE = 20
-APP_VERSION = "9.35"
+APP_VERSION = "9.36"
 
 # ============================================================
 # 媒体マッピング
@@ -186,6 +186,8 @@ def reset_new_register_state():
         "score_perf_query", "score_perf_selected",
         "score_perf_selected_ids",
         "game_work_selected",
+        "game_series_suggestions",
+        "game_series_pick_fallback",
     ]
     for k in keys:
         st.session_state.pop(k, None)
@@ -2359,6 +2361,109 @@ def _wikipedia_en_title_candidates_from_japanese(title: str, limit: int = 8) -> 
     except Exception:
         return out
     return out
+
+@st.cache_data(ttl=86400)
+def search_game_series_candidates(query: str, limit: int = 8) -> list[dict]:
+    q = (query or "").strip()
+    if not q:
+        return []
+    series_queries = _dedupe_keep_order([
+        q, f"{q} シリーズ", f"{q} の伝説", f"{q} ゲーム", q.replace(" ", ""), q.replace("　", "")
+    ])
+    out = []
+    seen = set()
+    for sq in series_queries:
+        try:
+            res = requests.get(
+                "https://ja.wikipedia.org/w/api.php",
+                params={
+                    "action": "query",
+                    "list": "search",
+                    "srsearch": sq,
+                    "srlimit": limit,
+                    "format": "json",
+                },
+                timeout=DEFAULT_TIMEOUT,
+            )
+            if res.status_code != 200:
+                continue
+            items = res.json().get("query", {}).get("search", []) or []
+            for item in items:
+                ja_title = (item.get("title") or "").strip()
+                if not ja_title:
+                    continue
+                ll = requests.get(
+                    "https://ja.wikipedia.org/w/api.php",
+                    params={
+                        "action": "query",
+                        "prop": "langlinks",
+                        "lllang": "en",
+                        "titles": ja_title,
+                        "format": "json",
+                    },
+                    timeout=DEFAULT_TIMEOUT,
+                )
+                if ll.status_code != 200:
+                    continue
+                pages = ll.json().get("query", {}).get("pages", {}) or {}
+                for p in pages.values():
+                    for l in p.get("langlinks", []) or []:
+                        en_title = (l.get("*") or "").strip()
+                        if not en_title:
+                            continue
+                        key = (ja_title, en_title)
+                        if key in seen:
+                            continue
+                        seen.add(key)
+                        out.append({"ja": ja_title, "en": en_title})
+                        if len(out) >= limit:
+                            return out
+        except Exception:
+            continue
+    return out
+
+@st.cache_data(ttl=86400)
+def search_game_jp_title_precise(en_title: str) -> str:
+    title = (en_title or "").strip()
+    if not title:
+        return ""
+    jp = search_wikipedia_jp_title(title)
+    if jp:
+        return jp
+    # Wikidata label fallback
+    try:
+        wres = requests.get(
+            "https://www.wikidata.org/w/api.php",
+            params={
+                "action": "wbsearchentities",
+                "search": title,
+                "language": "en",
+                "type": "item",
+                "limit": 5,
+                "format": "json",
+            },
+            timeout=DEFAULT_TIMEOUT,
+        )
+        if wres.status_code != 200:
+            return ""
+        for item in wres.json().get("search", []) or []:
+            qid = (item.get("id") or "").strip()
+            if not qid:
+                continue
+            dres = requests.get(
+                f"https://www.wikidata.org/wiki/Special:EntityData/{qid}.json",
+                timeout=DEFAULT_TIMEOUT,
+            )
+            if dres.status_code != 200:
+                continue
+            entity = ((dres.json().get("entities") or {}).get(qid)) or {}
+            labels = entity.get("labels") or {}
+            ja_label = ((labels.get("ja") or {}).get("value") or "").strip()
+            if ja_label:
+                return ja_label
+    except Exception:
+        return ""
+    return ""
 
 @st.cache_data(ttl=86400)
 def _wiki_page_image_from_title(title: str, lang: str = "ja") -> str:
@@ -5018,7 +5123,12 @@ if mode == "新規登録":
                     elif media_label == "音楽アルバム":
                         results = search_albums(query or "", artist=creator_input or None)
                     elif media_label == "ゲーム":
-                        results = _search_games_for_ui(query or jp_input)
+                        gq = query or jp_input
+                        results = _search_games_for_ui(gq)
+                        if not results and _contains_japanese(gq):
+                            st.session_state.game_series_suggestions = search_game_series_candidates(gq, limit=10)
+                        else:
+                            st.session_state.pop("game_series_suggestions", None)
                     elif media_label == "アニメ":
                         results = search_anime(query or jp_input)
                     else:
@@ -5124,7 +5234,7 @@ if mode == "新規登録":
                                     new_jp = search_wikipedia_jp_title(f"{title} album")
                             elif media_label == "ゲーム":
                                 title = reg.get("cand_en") or reg.get("jp_input") or ""
-                                new_jp = search_wikipedia_jp_title(title)
+                                new_jp = search_game_jp_title_precise(title)
 
                             if new_jp:
                                 current_jp = (reg.get("jp_input") or "").strip()
@@ -5268,6 +5378,22 @@ if mode == "新規登録":
                                 st.caption(f"・{t}")
                     else:
                         st.warning("候補が見つかりませんでした")
+                        if media_label == "ゲーム":
+                            series_sugs = st.session_state.get("game_series_suggestions", [])
+                            if series_sugs:
+                                st.info("シリーズ候補が見つかりました。先にシリーズを確定して作品を取得できます。")
+                                labels = [f"{s.get('ja','')} / {s.get('en','')}" for s in series_sugs]
+                                pick = st.selectbox("シリーズ候補", options=list(range(len(labels))), format_func=lambda i: labels[i], key="game_series_pick_fallback")
+                                if st.button("シリーズで作品候補を取得", key="game_series_fetch_fallback"):
+                                    series_en = series_sugs[pick].get("en", "")
+                                    series_results = _search_games_for_ui(series_en)
+                                    reg_ids = get_registered_ids(st.session_state.pages)
+                                    filtered, excluded = filter_registered(series_results, media_label, reg_ids)
+                                    st.session_state.new_search_raw_count = len(series_results or [])
+                                    st.session_state.new_search_results = filtered[:200]
+                                    st.session_state.new_search_excluded = excluded
+                                    st.session_state.new_search_done = True
+                                    st.rerun()
                     st.caption("検索すると、ここに候補が表示されます。")
                     results_list = []
     
@@ -5354,7 +5480,7 @@ if mode == "新規登録":
                             st.image(selected_work["cover_url"], width=240)
                         c1, c2 = st.columns(2)
                         if c1.button("✅ 単体登録", key="game_single_from_selected"):
-                            picked_jp = selected_work.get("jp_title") or search_wikipedia_jp_title(selected_work.get("title", "")) or selected_work.get("title", "")
+                            picked_jp = selected_work.get("jp_title") or search_game_jp_title_precise(selected_work.get("title", "")) or selected_work.get("title", "")
                             st.session_state.confirm_reg = {
                                 "tmdb_id": 0, "cover_url": selected_work.get("cover_url", ""),
                                 "tmdb_release": selected_work.get("release", ""), "media_type": "game",
@@ -5367,7 +5493,7 @@ if mode == "新規登録":
                             st.session_state.active_reg_tab_next = "確認"
                             st.rerun()
                         if c2.button("📋 登録リストに追加", key="game_cart_from_selected"):
-                            picked_jp = selected_work.get("jp_title") or search_wikipedia_jp_title(selected_work.get("title", "")) or selected_work.get("title", "")
+                            picked_jp = selected_work.get("jp_title") or search_game_jp_title_precise(selected_work.get("title", "")) or selected_work.get("title", "")
                             st.session_state.reg_cart.append({
                                 "jp_title":   picked_jp,
                                 "en_title":   selected_work.get("title", ""),
