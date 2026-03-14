@@ -50,7 +50,7 @@ NOTION_HEADERS = {
 
 DEFAULT_TIMEOUT = 20
 REFRESH_BATCH_SIZE = 20
-APP_VERSION = "9.60"
+APP_VERSION = "9.61"
 GAME_JP_LEARNED_MAP_PATH = Path("data/game_jp_learned.json")
 WIKIMEDIA_HEADERS = {
     "User-Agent": "ArteMisCERS/9.x (metadata resolver; contact: app operator)",
@@ -6212,29 +6212,6 @@ if mode == "新規登録":
                             if bulk_jp_map:
                                 jp_resolve_cache.update(bulk_jp_map)
                                 st.session_state.game_jp_resolve_cache = jp_resolve_cache
-                                # 検索で解決できたJPタイトルは即時に辞書へ反映（本番永続）
-                                if "game_jp_autosaved" not in st.session_state:
-                                    st.session_state.game_jp_autosaved = set()
-                                autosaved = st.session_state.game_jp_autosaved
-                                for w in work_list:
-                                    en_t = (w.get("title") or "").strip()
-                                    if not en_t:
-                                        continue
-                                    jp_t = (bulk_jp_map.get(en_t) or "").strip()
-                                    if not jp_t:
-                                        continue
-                                    key = f"{w.get('id') or ''}:{en_t}:{jp_t}"
-                                    if key in autosaved:
-                                        continue
-                                    _learn_game_jp_title(
-                                        en_t,
-                                        jp_t,
-                                        igdb_id=w.get("id"),
-                                        confidence="中",
-                                        persist_notion=True,
-                                    )
-                                    autosaved.add(key)
-                                st.session_state.game_jp_autosaved = autosaved
                             if unresolved_titles:
                                 st.caption(f"JP自動補完: 先頭{min(bulk_probe_limit, len(unresolved_titles))}件を事前解決（残りは選択後に解決）")
                             jp_infos = []
@@ -6258,6 +6235,28 @@ if mode == "新規登録":
                                         "conf": conf if jp_t else "",
                                     }
                                 )
+                            # 表示確定したJPタイトルはソースに関わらず辞書へ永続化
+                            if "game_jp_autosaved" not in st.session_state:
+                                st.session_state.game_jp_autosaved = set()
+                            autosaved = st.session_state.game_jp_autosaved
+                            for idx, w in enumerate(work_list):
+                                en_t = (w.get("title") or "").strip()
+                                jp_t = (jp_infos[idx].get("jp") or "").strip()
+                                if not en_t or not jp_t or jp_t == "（JP未解決）":
+                                    continue
+                                key = f"{w.get('id') or ''}:{en_t}:{jp_t}"
+                                if key in autosaved:
+                                    continue
+                                conf = jp_infos[idx].get("conf") or ("高" if w.get("jp_source") else "中")
+                                _learn_game_jp_title(
+                                    en_t,
+                                    jp_t,
+                                    igdb_id=w.get("id"),
+                                    confidence=conf,
+                                    persist_notion=True,
+                                )
+                                autosaved.add(key)
+                            st.session_state.game_jp_autosaved = autosaved
                             pick_idx = st.radio(
                                 "作品を選択",
                                 options=list(range(len(work_list))),
