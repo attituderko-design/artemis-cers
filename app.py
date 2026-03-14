@@ -50,7 +50,7 @@ NOTION_HEADERS = {
 
 DEFAULT_TIMEOUT = 20
 REFRESH_BATCH_SIZE = 20
-APP_VERSION = "9.82"
+APP_VERSION = "9.83"
 GAME_JP_LEARNED_MAP_PATH = Path("data/game_jp_learned.json")
 WIKIMEDIA_HEADERS = {
     "User-Agent": "ArteMisCERS/9.x (metadata resolver; contact: app operator)",
@@ -1679,7 +1679,7 @@ def search_games(query: str) -> list:
         safe_q = (q or "").replace('"', "").strip()
         if not safe_q:
             return []
-        fields = "name,alternative_names.name,alternative_names.comment,game_localizations.name,game_localizations.region,cover.url,first_release_date,genres.name,involved_companies.company.name,involved_companies.developer,involved_companies.publisher,platforms.name,summary,total_rating_count,rating,category"
+        fields = "name,alternative_names.name,alternative_names.comment,game_localizations.name,game_localizations.region,cover.url,artworks.url,screenshots.url,first_release_date,genres.name,involved_companies.company.name,involved_companies.developer,involved_companies.publisher,platforms.name,summary,total_rating_count,rating,category"
         bodies = [
             f'search "{safe_q}"; fields {fields}; limit 100;',
             f'fields {fields}; where name ~ *"{safe_q}"*; limit 100;',
@@ -1710,6 +1710,16 @@ def search_games(query: str) -> list:
             cover_url = ""
             if item.get("cover", {}).get("url"):
                 cover_url = "https:" + item["cover"]["url"].replace("t_thumb", "t_cover_big")
+            artwork_urls = []
+            for a in item.get("artworks", []) or []:
+                u = (a.get("url") or "").strip()
+                if u:
+                    artwork_urls.append(("https:" + u).replace("t_thumb", "t_cover_big"))
+            screenshot_urls = []
+            for s in item.get("screenshots", []) or []:
+                u = (s.get("url") or "").strip()
+                if u:
+                    screenshot_urls.append(("https:" + u).replace("t_thumb", "t_cover_big"))
             release_year = ""
             if item.get("first_release_date"):
                 release_year = datetime.utcfromtimestamp(item["first_release_date"]).strftime("%Y-%m-%d")
@@ -1731,6 +1741,8 @@ def search_games(query: str) -> list:
                 "jp_source":   jp_source,
                 "jp_confidence": jp_conf,
                 "cover_url":   cover_url,
+                "artwork_urls": _dedupe_keep_order(artwork_urls),
+                "screenshot_urls": _dedupe_keep_order(screenshot_urls),
                 "release":     release_year,
                 "genres":      genres,
                 "developer":   developer,
@@ -3562,9 +3574,11 @@ def _build_game_cover_candidates(cand: dict, query_hint: str = "") -> list[str]:
     ja_img = _wiki_page_image_from_title(jp_title, "ja") if jp_title else ""
     en_img = _wiki_page_image_from_title(en_title, "en") if en_title else ""
     igdb_img = cand.get("cover_url", "")
+    artwork_imgs = [u for u in (cand.get("artwork_urls") or []) if u]
+    screenshot_imgs = [u for u in (cand.get("screenshot_urls") or []) if u]
     related = [u for u in (cand.get("related_cover_urls") or []) if u]
     existing = [u for u in (cand.get("cover_candidates") or []) if u]
-    return _dedupe_keep_order([ja_img, igdb_img, en_img] + related + existing)
+    return _dedupe_keep_order([ja_img, igdb_img, en_img] + artwork_imgs + related + screenshot_imgs + existing)
 
 def _search_games_for_ui(query: str, include_images: bool = False) -> list:
     q = (query or "").strip()
