@@ -48,7 +48,7 @@ NOTION_HEADERS = {
 
 DEFAULT_TIMEOUT = 20
 REFRESH_BATCH_SIZE = 20
-APP_VERSION = "9.32"
+APP_VERSION = "9.33"
 
 # ============================================================
 # 媒体マッピング
@@ -1757,6 +1757,17 @@ def search_games(query: str) -> list:
                 continue
             seen.add(gid)
             all_results.append(row)
+    # 1件しか取れず、かつ特装/同梱系なら本編候補を追加探索
+    if len(all_results) == 1:
+        only = all_results[0]
+        if _game_variant_label(only.get("title", "")) != "本編候補":
+            for bq in _game_base_title_candidates(only.get("title", "")):
+                for row in _search_igdb_once(bq, headers):
+                    gid = row.get("id")
+                    if gid in seen:
+                        continue
+                    seen.add(gid)
+                    all_results.append(row)
     if all_results:
         base_queries = [q] + [x for x in queries if x != q]
         def _row_sort_key(r: dict):
@@ -2170,50 +2181,58 @@ def _wikipedia_en_title_candidates_from_japanese(title: str, limit: int = 8) -> 
     if not q:
         return []
     out, seen = [], set()
-    try:
-        ja_res = requests.get(
-            "https://ja.wikipedia.org/w/api.php",
-            params={
-                "action": "query",
-                "list": "search",
-                "srsearch": q,
-                "srlimit": max(1, min(limit, 10)),
-                "format": "json",
-            },
-            timeout=DEFAULT_TIMEOUT,
-        )
-        if ja_res.status_code != 200:
-            return []
-        items = ja_res.json().get("query", {}).get("search", [])
-        for item in items:
-            page_title = (item.get("title") or "").strip()
-            if not page_title:
-                continue
-            ll_res = requests.get(
+    def _collect_from_ja_search(sr: str):
+        try:
+            ja_res = requests.get(
                 "https://ja.wikipedia.org/w/api.php",
                 params={
                     "action": "query",
-                    "prop": "langlinks",
-                    "lllang": "en",
-                    "titles": page_title,
+                    "list": "search",
+                    "srsearch": sr,
+                    "srlimit": max(1, min(limit, 10)),
                     "format": "json",
                 },
                 timeout=DEFAULT_TIMEOUT,
             )
-            if ll_res.status_code != 200:
-                continue
-            pages = ll_res.json().get("query", {}).get("pages", {})
-            for page in pages.values():
-                langlinks = page.get("langlinks", [])
-                for ll in langlinks:
-                    en = (ll.get("*") or "").strip()
-                    if en and en not in seen:
-                        out.append(en)
-                        seen.add(en)
-                        if len(out) >= limit:
-                            return out
-    except Exception:
-        return out
+            if ja_res.status_code != 200:
+                return
+            items = ja_res.json().get("query", {}).get("search", [])
+            for item in items:
+                page_title = (item.get("title") or "").strip()
+                if not page_title:
+                    continue
+                ll_res = requests.get(
+                    "https://ja.wikipedia.org/w/api.php",
+                    params={
+                        "action": "query",
+                        "prop": "langlinks",
+                        "lllang": "en",
+                        "titles": page_title,
+                        "format": "json",
+                    },
+                    timeout=DEFAULT_TIMEOUT,
+                )
+                if ll_res.status_code != 200:
+                    continue
+                pages = ll_res.json().get("query", {}).get("pages", {})
+                for page in pages.values():
+                    langlinks = page.get("langlinks", [])
+                    for ll in langlinks:
+                        en = (ll.get("*") or "").strip()
+                        if en and en not in seen:
+                            out.append(en)
+                            seen.add(en)
+                            if len(out) >= limit:
+                                return
+        except Exception:
+            return
+
+    _collect_from_ja_search(q)
+    if len(out) < limit:
+        for suffix in ["ゲーム", "シリーズ", "の伝説", "作品", "ビデオゲーム"]:
+            _collect_from_ja_search(f"{q} {suffix}")
+            if len(out) >= limit:
+                break
     if out:
         return out
     # Wikipedia検索で拾えない短い別称向け: Wikidata検索 -> enwiki sitelink
@@ -2341,6 +2360,23 @@ def _game_variant_label(title: str) -> str:
     if any(k in low for k in ["edition", "bundle", "collection", "pack"]):
         return "特装/同梱"
     return "本編候補"
+
+def _game_base_title_candidates(title: str) -> list[str]:
+    t = (title or "").strip()
+    if not t:
+        return []
+    cands = [t]
+    t1 = re.sub(r"\s*-\s*[^-]*(edition|bundle|collection|pack).*$", "", t, flags=re.IGNORECASE).strip()
+    if t1 and t1 not in cands:
+        cands.append(t1)
+    t2 = re.sub(r"\s*-\s*[^-]*(dlc|expansion|season pass).*$", "", t, flags=re.IGNORECASE).strip()
+    if t2 and t2 not in cands:
+        cands.append(t2)
+    if ":" in t:
+        t3 = t.split(":", 1)[0].strip()
+        if t3 and t3 not in cands:
+            cands.append(t3)
+    return cands
 
 def _build_game_cover_candidates(cand: dict, query_hint: str = "") -> list[str]:
     en_title = (cand.get("title") or "").strip()
