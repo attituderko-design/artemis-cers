@@ -50,7 +50,7 @@ NOTION_HEADERS = {
 
 DEFAULT_TIMEOUT = 20
 REFRESH_BATCH_SIZE = 20
-APP_VERSION = "9.61"
+APP_VERSION = "9.62"
 GAME_JP_LEARNED_MAP_PATH = Path("data/game_jp_learned.json")
 WIKIMEDIA_HEADERS = {
     "User-Agent": "ArteMisCERS/9.x (metadata resolver; contact: app operator)",
@@ -3033,13 +3033,13 @@ def _invalidate_game_jp_dict_cache() -> None:
     st.session_state.pop("_game_jp_notion_cache", None)
 
 
-def _upsert_game_jp_dict_notion(igdb_id: int | None, en_title: str, jp_title: str, confidence: str = "手動") -> None:
+def _upsert_game_jp_dict_notion(igdb_id: int | None, en_title: str, jp_title: str, confidence: str = "手動") -> bool:
     if not NOTION_GAME_JP_DICT_DB_ID:
-        return
+        return False
     en = (en_title or "").strip()
     jp = (jp_title or "").strip()
     if not en or not jp:
-        return
+        return False
 
     page_id = ""
     by_id, _, id_to_page = _get_game_jp_dict_cache()
@@ -3050,17 +3050,22 @@ def _upsert_game_jp_dict_notion(igdb_id: int | None, en_title: str, jp_title: st
     db_meta = api_request("get", f"https://api.notion.com/v1/databases/{NOTION_GAME_JP_DICT_DB_ID}")
     db_props = (db_meta.json().get("properties", {}) if db_meta and db_meta.status_code == 200 else {}) or {}
     title_prop = next((k for k, v in db_props.items() if (v or {}).get("type") == "title"), "名前")
-    jp_prop = next((k for k, v in db_props.items() if (v or {}).get("type") == "rich_text" and ("日本語" in k or "JP" in k.upper())), "日本語タイトル")
-    en_prop = next((k for k, v in db_props.items() if (v or {}).get("type") == "rich_text" and ("英語" in k or "EN" in k.upper())), "英語タイトル")
+    jp_prop = next((k for k, v in db_props.items() if (v or {}).get("type") == "rich_text" and ("日本語" in k or "JP" in k.upper())), "")
+    en_prop = next((k for k, v in db_props.items() if (v or {}).get("type") == "rich_text" and ("英語" in k or "EN" in k.upper())), "")
+    rt_props = [k for k, v in db_props.items() if (v or {}).get("type") == "rich_text"]
+    if not jp_prop and rt_props:
+        jp_prop = rt_props[0]
+    if not en_prop:
+        en_prop = rt_props[1] if len(rt_props) > 1 else (rt_props[0] if rt_props else "")
     id_prop = next((k for k, v in db_props.items() if (v or {}).get("type") == "number" and ("IGDB" in k.upper() or "ID" in k.upper())), "IGDB_ID")
     conf_prop = next((k for k, v in db_props.items() if (v or {}).get("type") == "select" and ("信頼" in k or "CONF" in k.upper())), "信頼度")
     upd_prop = next((k for k, v in db_props.items() if (v or {}).get("type") == "date" and ("更新" in k or "DATE" in k.upper())), "更新日")
 
-    props = {
-        title_prop: {"title": [{"type": "text", "text": {"content": f"{igdb_id if igdb_id else '-'}:{en}"}}]},
-        en_prop: {"rich_text": [{"type": "text", "text": {"content": en}}]},
-        jp_prop: {"rich_text": [{"type": "text", "text": {"content": jp}}]},
-    }
+    props = {title_prop: {"title": [{"type": "text", "text": {"content": f"{igdb_id if igdb_id else '-'}:{en}"}}]}}
+    if en_prop:
+        props[en_prop] = {"rich_text": [{"type": "text", "text": {"content": en}}]}
+    if jp_prop:
+        props[jp_prop] = {"rich_text": [{"type": "text", "text": {"content": jp}}]}
     if conf_prop in db_props:
         props[conf_prop] = {"select": {"name": confidence or "手動"}}
     if upd_prop in db_props:
@@ -3069,10 +3074,11 @@ def _upsert_game_jp_dict_notion(igdb_id: int | None, en_title: str, jp_title: st
         props[id_prop] = {"number": int(igdb_id)}
 
     try:
+        res = None
         if page_id:
-            api_request("patch", f"https://api.notion.com/v1/pages/{page_id}", json={"properties": props})
+            res = api_request("patch", f"https://api.notion.com/v1/pages/{page_id}", json={"properties": props})
         else:
-            api_request(
+            res = api_request(
                 "post",
                 "https://api.notion.com/v1/pages",
                 json={
@@ -3080,13 +3086,19 @@ def _upsert_game_jp_dict_notion(igdb_id: int | None, en_title: str, jp_title: st
                     "properties": props,
                 },
             )
+        if res is None or res.status_code not in (200, 201):
+            if not st.session_state.get("_game_dict_upsert_warned"):
+                st.session_state["_game_dict_upsert_warned"] = True
+                st.warning(f"⚠️ ゲームJP辞書DB保存失敗: {res.status_code if res else 'None'}")
+            return False
         _invalidate_game_jp_dict_cache()
+        return True
     except Exception:
         # 失敗を握りつぶさず、1run中1回だけ表示
         if not st.session_state.get("_game_dict_upsert_warned"):
             st.session_state["_game_dict_upsert_warned"] = True
             st.warning("⚠️ ゲームJP辞書DBへの保存に失敗しました。プロパティ名/型をご確認ください。")
-        return
+        return False
 
 
 def _load_game_jp_learned_map() -> dict[str, str]:
@@ -3135,15 +3147,15 @@ def _lookup_game_jp_learned(en_title: str, igdb_id: int | None = None) -> str:
     return learned.get(base_key, "")
 
 
-def _learn_game_jp_title(en_title: str, jp_title: str, igdb_id: int | None = None, confidence: str = "手動", persist_notion: bool = True) -> None:
+def _learn_game_jp_title(en_title: str, jp_title: str, igdb_id: int | None = None, confidence: str = "手動", persist_notion: bool = True) -> bool:
     en = (en_title or "").strip()
     jp = (jp_title or "").strip()
     if not en or not jp or not _contains_japanese(jp):
-        return
+        return False
     key = _norm_game_title_key(en)
     learned = dict(_get_game_jp_learned_map())
     if learned.get(key) == jp:
-        return
+        return True
     learned[key] = jp
     st.session_state["_game_jp_learned_map"] = learned
     try:
@@ -3155,7 +3167,8 @@ def _learn_game_jp_title(en_title: str, jp_title: str, igdb_id: int | None = Non
     except Exception:
         pass
     if persist_notion:
-        _upsert_game_jp_dict_notion(igdb_id, en, jp, confidence=confidence)
+        return _upsert_game_jp_dict_notion(igdb_id, en, jp, confidence=confidence)
+    return True
 
 def _expand_game_query_aliases(query: str) -> list[str]:
     q = (query or "").strip()
@@ -6248,14 +6261,15 @@ if mode == "新規登録":
                                 if key in autosaved:
                                     continue
                                 conf = jp_infos[idx].get("conf") or ("高" if w.get("jp_source") else "中")
-                                _learn_game_jp_title(
+                                saved_ok = _learn_game_jp_title(
                                     en_t,
                                     jp_t,
                                     igdb_id=w.get("id"),
                                     confidence=conf,
                                     persist_notion=True,
                                 )
-                                autosaved.add(key)
+                                if saved_ok:
+                                    autosaved.add(key)
                             st.session_state.game_jp_autosaved = autosaved
                             pick_idx = st.radio(
                                 "作品を選択",
