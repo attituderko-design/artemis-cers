@@ -48,7 +48,7 @@ NOTION_HEADERS = {
 
 DEFAULT_TIMEOUT = 20
 REFRESH_BATCH_SIZE = 20
-APP_VERSION = "9.34"
+APP_VERSION = "9.35"
 
 # ============================================================
 # 媒体マッピング
@@ -2231,9 +2231,56 @@ def _wikipedia_en_title_candidates_from_japanese(title: str, limit: int = 8) -> 
         except Exception:
             return
 
+    def _collect_from_opensearch(sr: str):
+        try:
+            ores = requests.get(
+                "https://ja.wikipedia.org/w/api.php",
+                params={
+                    "action": "opensearch",
+                    "search": sr,
+                    "limit": max(1, min(limit, 10)),
+                    "namespace": 0,
+                    "format": "json",
+                },
+                timeout=DEFAULT_TIMEOUT,
+            )
+            if ores.status_code != 200:
+                return
+            arr = ores.json() or []
+            titles = arr[1] if len(arr) > 1 else []
+            for page_title in titles:
+                page_title = (page_title or "").strip()
+                if not page_title:
+                    continue
+                ll_res = requests.get(
+                    "https://ja.wikipedia.org/w/api.php",
+                    params={
+                        "action": "query",
+                        "prop": "langlinks",
+                        "lllang": "en",
+                        "titles": page_title,
+                        "format": "json",
+                    },
+                    timeout=DEFAULT_TIMEOUT,
+                )
+                if ll_res.status_code != 200:
+                    continue
+                pages = ll_res.json().get("query", {}).get("pages", {})
+                for page in pages.values():
+                    for ll in page.get("langlinks", []) or []:
+                        en = (ll.get("*") or "").strip()
+                        if en and en not in seen:
+                            out.append(en)
+                            seen.add(en)
+                            if len(out) >= limit:
+                                return
+        except Exception:
+            return
+
     bases = _dedupe_keep_order([q, q.replace(" ", ""), q.replace("　", "")])
     for b in bases:
         _collect_from_ja_search(b)
+        _collect_from_opensearch(b)
         if len(out) >= limit:
             break
     if len(out) < limit:
@@ -2242,6 +2289,8 @@ def _wikipedia_en_title_candidates_from_japanese(title: str, limit: int = 8) -> 
             for suffix in suffixes:
                 _collect_from_ja_search(f"{b} {suffix}")
                 _collect_from_ja_search(f"{b}{suffix}")
+                _collect_from_opensearch(f"{b} {suffix}")
+                _collect_from_opensearch(f"{b}{suffix}")
                 if len(out) >= limit:
                     break
             if len(out) >= limit:
@@ -2422,14 +2471,35 @@ def _search_games_for_ui(query: str, include_images: bool = False) -> list:
                         continue
                     base.append(r)
                     seen.add(rid)
+        # シリーズ語などで0件の場合、英語候補から主要トークン検索を試す
+        if not base and en_candidates:
+            token_queries = []
+            for en in en_candidates:
+                words = re.findall(r"[A-Za-z][A-Za-z0-9']{3,}", en)
+                # 一般語を間引いて、固有語を優先
+                drop = {"legend", "game", "video", "the", "of", "and"}
+                for w in words:
+                    lw = w.lower()
+                    if lw in drop:
+                        continue
+                    token_queries.append(w)
+            token_queries = _dedupe_keep_order(token_queries)[:6]
+            seen = set()
+            for tq in token_queries:
+                for r in search_games(tq):
+                    rid = r.get("id")
+                    if rid in seen:
+                        continue
+                    base.append(r)
+                    seen.add(rid)
+                if len(base) >= 120:
+                    break
     enriched = []
     for cand in base:
         en_title = (cand.get("title") or "").strip()
-        jp_title = search_wikipedia_jp_title(en_title) if en_title else ""
-        if not jp_title and _contains_japanese(q):
-            jp_title = q
         row = dict(cand)
-        row["jp_title"] = jp_title or en_title
+        # 作品一覧表示は軽量化のためJP逆引きを遅延（確定時に実施）
+        row["jp_title"] = ""
         row["series_title"] = _derive_game_series_title(en_title)
         row["variant_label"] = _game_variant_label(en_title)
         if include_images:
@@ -5241,20 +5311,35 @@ if mode == "新規登録":
                             work_list = filtered
                     st.caption(f"② 作品候補: {len(work_list)}件（タイトル一覧）")
                     if work_list:
-                        pick_idx = st.radio(
-                            "作品を選択",
-                            options=list(range(len(work_list))),
-                            format_func=lambda i: f"{work_list[i].get('title','')}  /  {work_list[i].get('release','不明')}  /  {work_list[i].get('variant_label') or _game_variant_label(work_list[i].get('title',''))}",
-                            key="game_work_pick",
+                        game_work_filter = st.text_input(
+                            "作品名で絞り込み（任意）",
+                            key="game_work_filter",
+                            placeholder="例: Breath of the Wild",
                         )
-                        picked = dict(work_list[pick_idx])
-                        if st.button("🖼 画像候補を取得", key="game_fetch_cover_cands"):
-                            q_hint = (st.session_state.get("inp_en_main") or st.session_state.get("inp_jp_main") or "")
-                            cands = _build_game_cover_candidates(picked, query_hint=q_hint)
-                            picked["cover_candidates"] = cands
-                            picked["cover_url"] = cands[0] if cands else picked.get("cover_url", "")
-                            st.session_state.game_work_selected = picked
-                            st.rerun()
+                        if game_work_filter.strip():
+                            gf = game_work_filter.strip().lower()
+                            work_list = [w for w in work_list if gf in (w.get("title", "").lower())]
+                        max_show = 80
+                        if len(work_list) > max_show:
+                            st.caption(f"表示上限: {max_show}件（{len(work_list)}件中）")
+                            work_list = work_list[:max_show]
+                        if work_list:
+                            pick_idx = st.radio(
+                                "作品を選択",
+                                options=list(range(len(work_list))),
+                                format_func=lambda i: f"{work_list[i].get('title','')}  /  {work_list[i].get('release','不明')}  /  {work_list[i].get('variant_label') or _game_variant_label(work_list[i].get('title',''))}",
+                                key="game_work_pick",
+                            )
+                            picked = dict(work_list[pick_idx])
+                            if st.button("🖼 画像候補を取得", key="game_fetch_cover_cands"):
+                                q_hint = (st.session_state.get("inp_en_main") or st.session_state.get("inp_jp_main") or "")
+                                cands = _build_game_cover_candidates(picked, query_hint=q_hint)
+                                picked["cover_candidates"] = cands
+                                picked["cover_url"] = cands[0] if cands else picked.get("cover_url", "")
+                                st.session_state.game_work_selected = picked
+                                st.rerun()
+                        else:
+                            st.info("絞り込み条件に一致する作品がありません。")
                     selected_work = st.session_state.get("game_work_selected")
                     if selected_work:
                         cover_cands = selected_work.get("cover_candidates") or []
@@ -5269,10 +5354,11 @@ if mode == "新規登録":
                             st.image(selected_work["cover_url"], width=240)
                         c1, c2 = st.columns(2)
                         if c1.button("✅ 単体登録", key="game_single_from_selected"):
+                            picked_jp = selected_work.get("jp_title") or search_wikipedia_jp_title(selected_work.get("title", "")) or selected_work.get("title", "")
                             st.session_state.confirm_reg = {
                                 "tmdb_id": 0, "cover_url": selected_work.get("cover_url", ""),
                                 "tmdb_release": selected_work.get("release", ""), "media_type": "game",
-                                "cand_en": selected_work.get("title", ""), "jp_input": selected_work.get("jp_title") or selected_work.get("title", ""),
+                                "cand_en": selected_work.get("title", ""), "jp_input": picked_jp,
                                 "book_authors": [selected_work.get("developer", "")], "book_genres": selected_work.get("genres", []),
                                 "isbn": "", "game_publisher": selected_work.get("publisher", ""),
                                 "igdb_id": selected_work.get("id"),
@@ -5281,8 +5367,9 @@ if mode == "新規登録":
                             st.session_state.active_reg_tab_next = "確認"
                             st.rerun()
                         if c2.button("📋 登録リストに追加", key="game_cart_from_selected"):
+                            picked_jp = selected_work.get("jp_title") or search_wikipedia_jp_title(selected_work.get("title", "")) or selected_work.get("title", "")
                             st.session_state.reg_cart.append({
-                                "jp_title":   selected_work.get("jp_title") or selected_work.get("title", ""),
+                                "jp_title":   picked_jp,
                                 "en_title":   selected_work.get("title", ""),
                                 "cover_url":  selected_work.get("cover_url", ""),
                                 "cover_candidates": selected_work.get("cover_candidates", []),
