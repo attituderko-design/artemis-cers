@@ -49,7 +49,7 @@ NOTION_HEADERS = {
 
 DEFAULT_TIMEOUT = 20
 REFRESH_BATCH_SIZE = 20
-APP_VERSION = "9.47"
+APP_VERSION = "9.48"
 GAME_JP_LEARNED_MAP_PATH = Path("data/game_jp_learned.json")
 
 # ============================================================
@@ -2163,6 +2163,45 @@ def _wikidata_ja_label_from_en_wikipedia_title(title: str) -> str:
     return ""
 
 
+def _wikidata_en_title_from_ja_wikipedia_title(title: str) -> str:
+    t = (title or "").strip()
+    if not t:
+        return ""
+    try:
+        r = requests.get(
+            "https://ja.wikipedia.org/w/api.php",
+            params={
+                "action": "query",
+                "prop": "pageprops",
+                "titles": t,
+                "redirects": 1,
+                "format": "json",
+            },
+            timeout=DEFAULT_TIMEOUT,
+        )
+        if r.status_code != 200:
+            return ""
+        pages = (r.json().get("query") or {}).get("pages") or {}
+        qid = ""
+        for p in pages.values():
+            qid = ((p.get("pageprops") or {}).get("wikibase_item") or "").strip()
+            if qid:
+                break
+        if not qid:
+            return ""
+        dres = requests.get(
+            f"https://www.wikidata.org/wiki/Special:EntityData/{qid}.json",
+            timeout=DEFAULT_TIMEOUT,
+        )
+        if dres.status_code != 200:
+            return ""
+        entity = ((dres.json().get("entities") or {}).get(qid)) or {}
+        sitelinks = entity.get("sitelinks") or {}
+        return ((sitelinks.get("enwiki") or {}).get("title") or "").strip()
+    except Exception:
+        return ""
+
+
 @st.cache_data(ttl=86400)
 def search_wikipedia_jp_title(title: str) -> str:
     """Wikipediaの言語リンク/検索から日本語タイトルを取得（見つからなければ空文字）"""
@@ -2336,6 +2375,7 @@ def _wikipedia_en_title_candidates_from_japanese(title: str, limit: int = 8) -> 
                 if ll_res.status_code != 200:
                     continue
                 pages = ll_res.json().get("query", {}).get("pages", {})
+                found = False
                 for page in pages.values():
                     langlinks = page.get("langlinks", [])
                     for ll in langlinks:
@@ -2343,8 +2383,16 @@ def _wikipedia_en_title_candidates_from_japanese(title: str, limit: int = 8) -> 
                         if en and en not in seen:
                             out.append(en)
                             seen.add(en)
+                            found = True
                             if len(out) >= limit:
                                 return
+                if not found:
+                    en_wd = _wikidata_en_title_from_ja_wikipedia_title(page_title)
+                    if en_wd and en_wd not in seen:
+                        out.append(en_wd)
+                        seen.add(en_wd)
+                        if len(out) >= limit:
+                            return
         except Exception:
             return
 
@@ -2383,14 +2431,23 @@ def _wikipedia_en_title_candidates_from_japanese(title: str, limit: int = 8) -> 
                 if ll_res.status_code != 200:
                     continue
                 pages = ll_res.json().get("query", {}).get("pages", {})
+                found = False
                 for page in pages.values():
                     for ll in page.get("langlinks", []) or []:
                         en = (ll.get("*") or "").strip()
                         if en and en not in seen:
                             out.append(en)
                             seen.add(en)
+                            found = True
                             if len(out) >= limit:
                                 return
+                if not found:
+                    en_wd = _wikidata_en_title_from_ja_wikipedia_title(page_title)
+                    if en_wd and en_wd not in seen:
+                        out.append(en_wd)
+                        seen.add(en_wd)
+                        if len(out) >= limit:
+                            return
         except Exception:
             return
 
@@ -2651,7 +2708,47 @@ def resolve_game_jp_titles_bulk(en_titles: tuple[str, ...]) -> dict[str, str]:
         ja = out_norm.get(_norm_game_title_key(t), "")
         if ja:
             out[t] = ja
-    # 4) それでも未解決なら限定件数で個別精査（精度優先）
+    # 4) Wikidata sitelinks/labels（ENタイトル直指定）
+    still = [t for t in titles if t not in out]
+    try:
+        chunk = 25
+        for i in range(0, len(still), chunk):
+            part = still[i:i + chunk]
+            wres = requests.get(
+                "https://www.wikidata.org/w/api.php",
+                params={
+                    "action": "wbgetentities",
+                    "sites": "enwiki",
+                    "titles": "|".join(part),
+                    "props": "labels|sitelinks",
+                    "languages": "ja",
+                    "format": "json",
+                },
+                timeout=DEFAULT_TIMEOUT,
+            )
+            if wres.status_code != 200:
+                continue
+            entities = (wres.json().get("entities") or {})
+            for ent in entities.values():
+                sitelinks = ent.get("sitelinks") or {}
+                enwiki = ((sitelinks.get("enwiki") or {}).get("title") or "").strip()
+                if not enwiki:
+                    continue
+                jawiki = ((sitelinks.get("jawiki") or {}).get("title") or "").strip()
+                ja_label = (((ent.get("labels") or {}).get("ja") or {}).get("value") or "").strip()
+                ja = jawiki or ja_label
+                if ja:
+                    out[enwiki] = ja
+                    out_norm[_norm_game_title_key(enwiki)] = ja
+        for t in titles:
+            if t in out:
+                continue
+            ja = out_norm.get(_norm_game_title_key(t), "")
+            if ja:
+                out[t] = ja
+    except Exception:
+        pass
+    # 5) それでも未解決なら限定件数で個別精査（精度優先）
     still = [t for t in titles if t not in out]
     for t in still[:30]:
         try:
