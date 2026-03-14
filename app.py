@@ -49,8 +49,16 @@ NOTION_HEADERS = {
 
 DEFAULT_TIMEOUT = 20
 REFRESH_BATCH_SIZE = 20
-APP_VERSION = "9.53"
+APP_VERSION = "9.54"
 GAME_JP_LEARNED_MAP_PATH = Path("data/game_jp_learned.json")
+WIKIMEDIA_HEADERS = {
+    "User-Agent": "ArteMisCERS/9.x (metadata resolver; contact: app operator)",
+    "Accept": "application/json",
+}
+
+
+def wikimedia_get(url: str, params: dict | None = None, timeout: int = DEFAULT_TIMEOUT):
+    return requests.get(url, params=params, timeout=timeout, headers=WIKIMEDIA_HEADERS)
 
 # ============================================================
 # 媒体マッピング
@@ -1088,8 +1096,7 @@ def _wiki_image_from_page(wiki_url: str) -> tuple[str | None, str | None]:
         if not title:
             return None, None
         api_url = f"{parsed.scheme}://{parsed.netloc}/w/api.php"
-        res = requests.get(
-            api_url,
+        res = wikimedia_get(api_url,
             params={
                 "action": "query",
                 "titles": title,
@@ -1124,8 +1131,7 @@ def _wiki_search_image(query: str, lang: str = "ja") -> tuple[str | None, str | 
         return None, None
     try:
         api_url = f"https://{lang}.wikipedia.org/w/api.php"
-        sres = requests.get(
-            api_url,
+        sres = wikimedia_get(api_url,
             params={
                 "action": "query",
                 "list": "search",
@@ -1142,8 +1148,7 @@ def _wiki_search_image(query: str, lang: str = "ja") -> tuple[str | None, str | 
             title = item.get("title", "")
             if not title:
                 continue
-            pres = requests.get(
-                api_url,
+            pres = wikimedia_get(api_url,
                 params={
                     "action": "query",
                     "titles": title,
@@ -1177,7 +1182,7 @@ def _wikidata_p18_image_url(qid: str) -> str | None:
     if not qid:
         return None
     try:
-        dres = requests.get(
+        dres = wikimedia_get(
             f"https://www.wikidata.org/wiki/Special:EntityData/{qid}.json",
             timeout=DEFAULT_TIMEOUT,
         )
@@ -1250,7 +1255,7 @@ def _wikidata_search_qids(query: str, lang: str = "en", limit: int = 5) -> list[
     if not q:
         return []
     try:
-        res = requests.get(
+        res = wikimedia_get(
             "https://www.wikidata.org/w/api.php",
             params={
                 "action": "wbsearchentities",
@@ -1516,7 +1521,7 @@ def get_mb_work_premiere_date(work_id: str, work_title: str = "", composer_name:
     def _extract_dates_from_qid(qid: str) -> list[str]:
         if not qid:
             return []
-        dres = requests.get(
+        dres = wikimedia_get(
             f"https://www.wikidata.org/wiki/Special:EntityData/{qid}.json",
             timeout=DEFAULT_TIMEOUT,
         )
@@ -2129,7 +2134,7 @@ def _wikidata_ja_label_from_en_wikipedia_title(title: str) -> str:
     if not t:
         return ""
     try:
-        r = requests.get(
+        r = wikimedia_get(
             "https://en.wikipedia.org/w/api.php",
             params={
                 "action": "query",
@@ -2150,7 +2155,7 @@ def _wikidata_ja_label_from_en_wikipedia_title(title: str) -> str:
                 break
         if not qid:
             return ""
-        dres = requests.get(
+        dres = wikimedia_get(
             f"https://www.wikidata.org/wiki/Special:EntityData/{qid}.json",
             timeout=DEFAULT_TIMEOUT,
         )
@@ -2175,7 +2180,7 @@ def _wikidata_en_title_from_ja_wikipedia_title(title: str) -> str:
     if not t:
         return ""
     try:
-        r = requests.get(
+        r = wikimedia_get(
             "https://ja.wikipedia.org/w/api.php",
             params={
                 "action": "query",
@@ -2196,7 +2201,7 @@ def _wikidata_en_title_from_ja_wikipedia_title(title: str) -> str:
                 break
         if not qid:
             return ""
-        dres = requests.get(
+        dres = wikimedia_get(
             f"https://www.wikidata.org/wiki/Special:EntityData/{qid}.json",
             timeout=DEFAULT_TIMEOUT,
         )
@@ -2217,7 +2222,7 @@ def search_wikipedia_jp_title(title: str) -> str:
     try:
         for cand in candidates:
             # 1) まずENタイトルをそのまま引いて langlinks を確認（最も精度が高い）
-            direct_res = requests.get(
+            direct_res = wikimedia_get(
                 "https://en.wikipedia.org/w/api.php",
                 params={
                     "action": "query",
@@ -2240,7 +2245,7 @@ def search_wikipedia_jp_title(title: str) -> str:
             if wd_jp:
                 return wd_jp
 
-            search_res = requests.get(
+            search_res = wikimedia_get(
                 "https://en.wikipedia.org/w/api.php",
                 params={
                     "action":  "query",
@@ -2256,7 +2261,7 @@ def search_wikipedia_jp_title(title: str) -> str:
                 for itm in items:
                     page_title = itm.get("title")
                     if page_title:
-                        ll_res = requests.get(
+                        ll_res = wikimedia_get(
                             "https://en.wikipedia.org/w/api.php",
                             params={
                                 "action": "query",
@@ -2274,7 +2279,7 @@ def search_wikipedia_jp_title(title: str) -> str:
                                 if langlinks:
                                     return langlinks[0].get("*", "") or ""
 
-            ja_res = requests.get(
+            ja_res = wikimedia_get(
                 "https://ja.wikipedia.org/w/api.php",
                 params={
                     "action":  "query",
@@ -2298,7 +2303,7 @@ def _wikipedia_en_title_from_japanese(title: str) -> str:
     if not q:
         return ""
     try:
-        ja_res = requests.get(
+        ja_res = wikimedia_get(
             "https://ja.wikipedia.org/w/api.php",
             params={
                 "action": "query",
@@ -2318,7 +2323,7 @@ def _wikipedia_en_title_from_japanese(title: str) -> str:
             page_title = (item.get("title") or "").strip()
             if not page_title:
                 continue
-            ll_res = requests.get(
+            ll_res = wikimedia_get(
                 "https://ja.wikipedia.org/w/api.php",
                 params={
                     "action": "query",
@@ -2347,7 +2352,7 @@ def _wikipedia_en_title_candidates_from_japanese(title: str, limit: int = 8) -> 
     out, seen = [], set()
     def _collect_from_ja_search(sr: str):
         try:
-            ja_res = requests.get(
+            ja_res = wikimedia_get(
                 "https://ja.wikipedia.org/w/api.php",
                 params={
                     "action": "query",
@@ -2365,7 +2370,7 @@ def _wikipedia_en_title_candidates_from_japanese(title: str, limit: int = 8) -> 
                 page_title = (item.get("title") or "").strip()
                 if not page_title:
                     continue
-                ll_res = requests.get(
+                ll_res = wikimedia_get(
                     "https://ja.wikipedia.org/w/api.php",
                     params={
                         "action": "query",
@@ -2402,7 +2407,7 @@ def _wikipedia_en_title_candidates_from_japanese(title: str, limit: int = 8) -> 
 
     def _collect_from_opensearch(sr: str):
         try:
-            ores = requests.get(
+            ores = wikimedia_get(
                 "https://ja.wikipedia.org/w/api.php",
                 params={
                     "action": "opensearch",
@@ -2421,7 +2426,7 @@ def _wikipedia_en_title_candidates_from_japanese(title: str, limit: int = 8) -> 
                 page_title = (page_title or "").strip()
                 if not page_title:
                     continue
-                ll_res = requests.get(
+                ll_res = wikimedia_get(
                     "https://ja.wikipedia.org/w/api.php",
                     params={
                         "action": "query",
@@ -2477,7 +2482,7 @@ def _wikipedia_en_title_candidates_from_japanese(title: str, limit: int = 8) -> 
         return out
     # Wikipedia検索で拾えない短い別称向け: Wikidata検索 -> enwiki sitelink
     try:
-        wres = requests.get(
+        wres = wikimedia_get(
             "https://www.wikidata.org/w/api.php",
             params={
                 "action": "wbsearchentities",
@@ -2494,7 +2499,7 @@ def _wikipedia_en_title_candidates_from_japanese(title: str, limit: int = 8) -> 
                 qid = (item.get("id") or "").strip()
                 if not qid:
                     continue
-                dres = requests.get(
+                dres = wikimedia_get(
                     f"https://www.wikidata.org/wiki/Special:EntityData/{qid}.json",
                     timeout=DEFAULT_TIMEOUT,
                 )
@@ -2514,7 +2519,7 @@ def _wikipedia_en_title_candidates_from_japanese(title: str, limit: int = 8) -> 
         return out
     # 最終フォールバック: 英語側検索でも候補取得を試す
     try:
-        eres = requests.get(
+        eres = wikimedia_get(
             "https://www.wikidata.org/w/api.php",
             params={
                 "action": "wbsearchentities",
@@ -2551,7 +2556,7 @@ def search_game_series_candidates(query: str, limit: int = 8) -> list[dict]:
     seen = set()
     for sq in series_queries:
         try:
-            res = requests.get(
+            res = wikimedia_get(
                 "https://ja.wikipedia.org/w/api.php",
                 params={
                     "action": "query",
@@ -2569,7 +2574,7 @@ def search_game_series_candidates(query: str, limit: int = 8) -> list[dict]:
                 ja_title = (item.get("title") or "").strip()
                 if not ja_title:
                     continue
-                ll = requests.get(
+                ll = wikimedia_get(
                     "https://ja.wikipedia.org/w/api.php",
                     params={
                         "action": "query",
@@ -2619,7 +2624,7 @@ def search_game_jp_title_precise(en_title: str) -> str:
         return jp
     # Wikidata label fallback
     try:
-        wres = requests.get(
+        wres = wikimedia_get(
             "https://www.wikidata.org/w/api.php",
             params={
                 "action": "wbsearchentities",
@@ -2637,7 +2642,7 @@ def search_game_jp_title_precise(en_title: str) -> str:
             qid = (item.get("id") or "").strip()
             if not qid:
                 continue
-            dres = requests.get(
+            dres = wikimedia_get(
                 f"https://www.wikidata.org/wiki/Special:EntityData/{qid}.json",
                 timeout=DEFAULT_TIMEOUT,
             )
@@ -2675,7 +2680,7 @@ def resolve_game_jp_titles_bulk(en_titles: tuple[str, ...]) -> dict[str, str]:
         chunk = 5
         for i in range(0, len(unresolved), chunk):
             part = unresolved[i:i + chunk]
-            res = requests.get(
+            res = wikimedia_get(
                 "https://en.wikipedia.org/w/api.php",
                 params={
                     "action": "query",
@@ -2718,7 +2723,7 @@ def resolve_game_jp_titles_bulk(en_titles: tuple[str, ...]) -> dict[str, str]:
         chunk = 5
         for i in range(0, len(still), chunk):
             part = still[i:i + chunk]
-            wres = requests.get(
+            wres = wikimedia_get(
                 "https://www.wikidata.org/w/api.php",
                 params={
                     "action": "wbgetentities",
@@ -2772,7 +2777,7 @@ def search_game_jp_title_from_query(jp_query: str, en_title: str = "") -> str:
     probes = [p for p in _dedupe_keep_order(probes) if p]
     try:
         for p in probes:
-            res = requests.get(
+            res = wikimedia_get(
                 "https://ja.wikipedia.org/w/api.php",
                 params={
                     "action": "query",
@@ -2793,7 +2798,7 @@ def search_game_jp_title_from_query(jp_query: str, en_title: str = "") -> str:
                 if not en_title:
                     return t
                 # ENタイトルがある場合は逆言語リンクで照合し、誤マッチを避ける
-                ll = requests.get(
+                ll = wikimedia_get(
                     "https://ja.wikipedia.org/w/api.php",
                     params={
                         "action": "query",
@@ -2840,7 +2845,7 @@ def diagnose_game_jp_resolution(en_title: str, jp_query: str = "") -> tuple[str,
 
     # 1) Wikipedia langlinks（ENタイトル直指定）
     try:
-        r = requests.get(
+        r = wikimedia_get(
             "https://en.wikipedia.org/w/api.php",
             params={
                 "action": "query",
@@ -2867,7 +2872,7 @@ def diagnose_game_jp_resolution(en_title: str, jp_query: str = "") -> tuple[str,
 
     # 2) Wikidata（EN wiki title -> jawiki/ja label）
     try:
-        wres = requests.get(
+        wres = wikimedia_get(
             "https://www.wikidata.org/w/api.php",
             params={
                 "action": "wbgetentities",
@@ -2912,7 +2917,7 @@ def _wiki_page_image_from_title(title: str, lang: str = "ja") -> str:
     if not t:
         return ""
     try:
-        res = requests.get(
+        res = wikimedia_get(
             f"https://{lang}.wikipedia.org/w/api.php",
             params={
                 "action": "query",
@@ -8442,6 +8447,7 @@ if mode == "データ管理":
                                                     st.rerun()
                                                 else:
                                                     st.error("❌ 一部更新に失敗しました")
+
 
 
 
