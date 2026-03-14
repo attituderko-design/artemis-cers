@@ -48,7 +48,7 @@ NOTION_HEADERS = {
 
 DEFAULT_TIMEOUT = 20
 REFRESH_BATCH_SIZE = 20
-APP_VERSION = "9.33"
+APP_VERSION = "9.34"
 
 # ============================================================
 # 媒体マッピング
@@ -1757,6 +1757,10 @@ def search_games(query: str) -> list:
                 continue
             seen.add(gid)
             all_results.append(row)
+            if len(all_results) >= 220:
+                break
+        if len(all_results) >= 220:
+            break
     # 1件しか取れず、かつ特装/同梱系なら本編候補を追加探索
     if len(all_results) == 1:
         only = all_results[0]
@@ -2227,10 +2231,19 @@ def _wikipedia_en_title_candidates_from_japanese(title: str, limit: int = 8) -> 
         except Exception:
             return
 
-    _collect_from_ja_search(q)
+    bases = _dedupe_keep_order([q, q.replace(" ", ""), q.replace("　", "")])
+    for b in bases:
+        _collect_from_ja_search(b)
+        if len(out) >= limit:
+            break
     if len(out) < limit:
-        for suffix in ["ゲーム", "シリーズ", "の伝説", "作品", "ビデオゲーム"]:
-            _collect_from_ja_search(f"{q} {suffix}")
+        suffixes = ["ゲーム", "シリーズ", "の伝説", "伝説", "作品", "ビデオゲーム"]
+        for b in bases:
+            for suffix in suffixes:
+                _collect_from_ja_search(f"{b} {suffix}")
+                _collect_from_ja_search(f"{b}{suffix}")
+                if len(out) >= limit:
+                    break
             if len(out) >= limit:
                 break
     if out:
@@ -5211,6 +5224,21 @@ if mode == "新規登録":
                             seen_series.add(stitle)
                     selected_series = st.selectbox("① シリーズ候補", series_order, key="game_series_pick")
                     work_list = [g for g in results_list if (g.get("series_title") or _derive_game_series_title(g.get("title", ""))) == selected_series]
+                    official_only = st.checkbox("公式寄り候補のみ表示", value=True, key="game_official_only")
+                    if official_only:
+                        def _is_official_like(x: dict) -> bool:
+                            low = (x.get("title") or "").lower()
+                            if any(k in low for k in ["randomizer", "redux", "mod", "multiplayer", "online", "hack"]):
+                                return False
+                            if x.get("variant_label") in ("追加コンテンツ", "特装/同梱"):
+                                return False
+                            rc = int(x.get("rating_count") or 0)
+                            has_rel = bool(x.get("release"))
+                            has_company = bool((x.get("developer") or "").strip() or (x.get("publisher") or "").strip())
+                            return rc >= 20 or (has_rel and has_company)
+                        filtered = [g for g in work_list if _is_official_like(g)]
+                        if filtered:
+                            work_list = filtered
                     st.caption(f"② 作品候補: {len(work_list)}件（タイトル一覧）")
                     if work_list:
                         pick_idx = st.radio(
