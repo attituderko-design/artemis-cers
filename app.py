@@ -50,7 +50,7 @@ NOTION_HEADERS = {
 
 DEFAULT_TIMEOUT = 20
 REFRESH_BATCH_SIZE = 20
-APP_VERSION = "9.64"
+APP_VERSION = "9.65"
 GAME_JP_LEARNED_MAP_PATH = Path("data/game_jp_learned.json")
 WIKIMEDIA_HEADERS = {
     "User-Agent": "ArteMisCERS/9.x (metadata resolver; contact: app operator)",
@@ -6231,8 +6231,7 @@ if mode == "新規登録":
                             if bulk_jp_map:
                                 jp_resolve_cache.update(bulk_jp_map)
                                 st.session_state.game_jp_resolve_cache = jp_resolve_cache
-                            if unresolved_titles:
-                                st.caption(f"JP自動補完: 先頭{min(bulk_probe_limit, len(unresolved_titles))}件を事前解決（残りは選択後に解決）")
+                            # 補完進捗の内部情報は画面に出さない
                             jp_infos = []
                             for w in work_list:
                                 en_t = w.get("title", "")
@@ -6280,7 +6279,11 @@ if mode == "新規登録":
                             pick_idx = st.radio(
                                 "作品を選択",
                                 options=list(range(len(work_list))),
-                                format_func=lambda i: f"{jp_infos[i]['jp']}  /  {work_list[i].get('title','')}  /  {work_list[i].get('release','不明')}  /  {('・'.join((work_list[i].get('platforms') or [])[:3]) or 'ハード不明')}  /  {work_list[i].get('variant_label') or _game_variant_label(work_list[i].get('title',''))}{('  /  ' + jp_infos[i]['src'] + '・' + jp_infos[i]['conf']) if jp_infos[i].get('src') else ''}",
+                                format_func=lambda i: (
+                                    f"{jp_infos[i]['jp']}  /  {work_list[i].get('release','不明')}  /  {('・'.join((work_list[i].get('platforms') or [])[:3]) or 'ハード不明')}  /  {work_list[i].get('variant_label') or _game_variant_label(work_list[i].get('title',''))}"
+                                    if jp_infos[i]['jp'] != "（JP未解決）"
+                                    else f"{jp_infos[i]['jp']}  /  {work_list[i].get('title','')}  /  {work_list[i].get('release','不明')}  /  {('・'.join((work_list[i].get('platforms') or [])[:3]) or 'ハード不明')}  /  {work_list[i].get('variant_label') or _game_variant_label(work_list[i].get('title',''))}"
+                                ),
                                 key="game_work_pick",
                             )
                             picked = dict(work_list[pick_idx])
@@ -6307,8 +6310,6 @@ if mode == "新規登録":
                             st.info("絞り込み条件に一致する作品がありません。")
                     selected_work = st.session_state.get("game_work_selected")
                     if selected_work:
-                        if selected_work.get("jp_source"):
-                            st.caption(f"JP候補ソース: {selected_work.get('jp_source')}（信頼度: {selected_work.get('jp_confidence') or '中'}）")
                         cover_cands = selected_work.get("cover_candidates") or []
                         if cover_cands:
                             cv_idx = st.selectbox(
