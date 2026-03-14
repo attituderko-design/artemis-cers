@@ -49,7 +49,7 @@ NOTION_HEADERS = {
 
 DEFAULT_TIMEOUT = 20
 REFRESH_BATCH_SIZE = 20
-APP_VERSION = "9.49"
+APP_VERSION = "9.50"
 GAME_JP_LEARNED_MAP_PATH = Path("data/game_jp_learned.json")
 
 # ============================================================
@@ -1690,10 +1690,17 @@ def search_games(query: str) -> list:
         safe_q = (q or "").replace('"', "").strip()
         if not safe_q:
             return []
+        fields = "name,alternative_names.name,alternative_names.comment,game_localizations.name,game_localizations.region,cover.url,first_release_date,genres.name,involved_companies.company.name,involved_companies.developer,involved_companies.publisher,platforms.name,summary,total_rating_count,rating,category"
         bodies = [
-            f'search "{safe_q}"; fields name,alternative_names.name,alternative_names.comment,game_localizations.name,game_localizations.region,cover.url,first_release_date,genres.name,involved_companies.company.name,involved_companies.developer,involved_companies.publisher,platforms.name,summary,total_rating_count,rating,category; limit 100;',
-            f'fields name,alternative_names.name,alternative_names.comment,game_localizations.name,game_localizations.region,cover.url,first_release_date,genres.name,involved_companies.company.name,involved_companies.developer,involved_companies.publisher,platforms.name,summary,total_rating_count,rating,category; where name ~ *"{safe_q}"*; limit 100;',
+            f'search "{safe_q}"; fields {fields}; limit 100;',
+            f'fields {fields}; where name ~ *"{safe_q}"*; limit 100;',
         ]
+        if _contains_japanese(safe_q):
+            # 日本語検索は title だけだと漏れるので、別名/ローカライズ名でも探索
+            bodies.extend([
+                f'fields {fields}; where alternative_names.name ~ *"{safe_q}"*; limit 100;',
+                f'fields {fields}; where game_localizations.name ~ *"{safe_q}"*; limit 100;',
+            ])
         raw_items = []
         for body in bodies:
             res = requests.post("https://api.igdb.com/v4/games", headers=headers, data=body, timeout=DEFAULT_TIMEOUT)
