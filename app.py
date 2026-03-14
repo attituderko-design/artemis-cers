@@ -50,7 +50,7 @@ NOTION_HEADERS = {
 
 DEFAULT_TIMEOUT = 20
 REFRESH_BATCH_SIZE = 20
-APP_VERSION = "9.62"
+APP_VERSION = "9.63"
 GAME_JP_LEARNED_MAP_PATH = Path("data/game_jp_learned.json")
 WIKIMEDIA_HEADERS = {
     "User-Agent": "ArteMisCERS/9.x (metadata resolver; contact: app operator)",
@@ -3047,7 +3047,7 @@ def _upsert_game_jp_dict_notion(igdb_id: int | None, en_title: str, jp_title: st
         page_id = id_to_page.get(str(int(igdb_id)), "")
 
     # DB実プロパティ名に合わせる（ユーザー側の命名差異を吸収）
-    db_meta = api_request("get", f"https://api.notion.com/v1/databases/{NOTION_GAME_JP_DICT_DB_ID}")
+    db_meta = api_request("get", f"https://api.notion.com/v1/databases/{NOTION_GAME_JP_DICT_DB_ID}", headers=NOTION_HEADERS)
     db_props = (db_meta.json().get("properties", {}) if db_meta and db_meta.status_code == 200 else {}) or {}
     title_prop = next((k for k, v in db_props.items() if (v or {}).get("type") == "title"), "名前")
     jp_prop = next((k for k, v in db_props.items() if (v or {}).get("type") == "rich_text" and ("日本語" in k or "JP" in k.upper())), "")
@@ -3076,11 +3076,12 @@ def _upsert_game_jp_dict_notion(igdb_id: int | None, en_title: str, jp_title: st
     try:
         res = None
         if page_id:
-            res = api_request("patch", f"https://api.notion.com/v1/pages/{page_id}", json={"properties": props})
+            res = api_request("patch", f"https://api.notion.com/v1/pages/{page_id}", headers=NOTION_HEADERS, json={"properties": props})
         else:
             res = api_request(
                 "post",
                 "https://api.notion.com/v1/pages",
+                headers=NOTION_HEADERS,
                 json={
                     "parent": {"database_id": NOTION_GAME_JP_DICT_DB_ID},
                     "properties": props,
@@ -3155,6 +3156,8 @@ def _learn_game_jp_title(en_title: str, jp_title: str, igdb_id: int | None = Non
     key = _norm_game_title_key(en)
     learned = dict(_get_game_jp_learned_map())
     if learned.get(key) == jp:
+        if persist_notion:
+            return _upsert_game_jp_dict_notion(igdb_id, en, jp, confidence=confidence)
         return True
     learned[key] = jp
     st.session_state["_game_jp_learned_map"] = learned
