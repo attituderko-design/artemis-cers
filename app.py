@@ -48,7 +48,7 @@ NOTION_HEADERS = {
 
 DEFAULT_TIMEOUT = 20
 REFRESH_BATCH_SIZE = 20
-APP_VERSION = "9.10"
+APP_VERSION = "9.11"
 
 # ============================================================
 # 媒体マッピング
@@ -4717,7 +4717,7 @@ if mode == "新規登録":
                                 "isbn":       "",
                                 "location":   None, "media_label": media_label,
                             }
-                            st.session_state.reg_cart.append(cart_item)
+                        st.session_state.reg_cart.append(cart_item)
                     st.session_state.bulk_checked = {}
                     st.success(f"✅ {len(checked_indices)} 件を登録リストに追加しました")
                     st.session_state.active_reg_tab_next = "登録リスト"
