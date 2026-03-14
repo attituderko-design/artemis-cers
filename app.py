@@ -50,7 +50,7 @@ NOTION_HEADERS = {
 
 DEFAULT_TIMEOUT = 20
 REFRESH_BATCH_SIZE = 20
-APP_VERSION = "9.71"
+APP_VERSION = "9.72"
 GAME_JP_LEARNED_MAP_PATH = Path("data/game_jp_learned.json")
 WIKIMEDIA_HEADERS = {
     "User-Agent": "ArteMisCERS/9.x (metadata resolver; contact: app operator)",
@@ -3130,6 +3130,12 @@ def cleanup_game_jp_dict_noise(max_rows: int = 200) -> dict[str, int]:
                 if r is not None and r.status_code == 200:
                     stats["archived"] += 1
             continue
+        # 中/低信頼でノイズ語を含むタイトルは辞書用途から除外
+        if conf in ("", "中", "低") and _is_noisy_game_title(en):
+            r = api_request("patch", f"https://api.notion.com/v1/pages/{pid}", headers=NOTION_HEADERS, json={"archived": True})
+            if r is not None and r.status_code == 200:
+                stats["archived"] += 1
+            continue
         # 手動確定は尊重。それ以外（高/中/低）はIGDB由来JPで補正対象
         if conf == "手動":
             continue
@@ -3417,6 +3423,17 @@ def _game_base_title_candidates(title: str) -> list[str]:
         if t3 and t3 not in cands:
             cands.append(t3)
     return cands
+
+def _is_noisy_game_title(title: str) -> bool:
+    low = (title or "").lower()
+    if not low:
+        return True
+    noisy_terms = [
+        "randomizer", "redux", "mod", "patch", "uncensored", "overhaul", "rebalance",
+        "multiplayer", "online", "hack", "edition", "version", "bundle", "collection",
+        "pack", "expansion", "season pass", "dlc",
+    ]
+    return any(t in low for t in noisy_terms)
 
 def _extract_jp_name_from_igdb_item(item: dict) -> tuple[str, str, str]:
     # 1) game_localizations（最優先）
