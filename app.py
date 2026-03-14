@@ -48,7 +48,7 @@ NOTION_HEADERS = {
 
 DEFAULT_TIMEOUT = 20
 REFRESH_BATCH_SIZE = 20
-APP_VERSION = "9.21"
+APP_VERSION = "9.22"
 
 # ============================================================
 # 媒体マッピング
@@ -1533,13 +1533,22 @@ def get_mb_work_premiere_date(work_id: str, work_title: str = "", composer_name:
         time.sleep(1.1)
         wres = requests.get(
             f"https://musicbrainz.org/ws/2/work/{work_id}",
-            params={"inc": "url-rels", "fmt": "json"},
+            params={"inc": "url-rels+recordings", "fmt": "json"},
             headers=MB_HEADERS,
             timeout=DEFAULT_TIMEOUT,
         )
         if wres.status_code != 200:
             return ""
-        relations = wres.json().get("relations", [])
+        work_data = wres.json()
+        # まずはMusicBrainz側で取得できる最古日付を優先
+        rec_dates = []
+        for rec in work_data.get("recordings", []) or []:
+            d = (rec.get("first-release-date") or "").strip()
+            if d:
+                rec_dates.append(d)
+        if rec_dates:
+            return sorted(rec_dates)[0]
+        relations = work_data.get("relations", [])
         wiki_urls, qid = _extract_mb_wiki_relations(relations)
         if not qid:
             for wurl in wiki_urls:
@@ -1587,6 +1596,27 @@ def get_igdb_token() -> str:
     return ""
 
 def search_games(query: str) -> list:
+    def _jp_game_query_variants(text: str) -> list[str]:
+        q = (text or "").strip()
+        if not q:
+            return []
+        variants = [q]
+        compact = re.sub(r"\s+", "", q)
+        if compact != q:
+            variants.append(compact)
+        spaced = q
+        for src, dst in [("オブザ", " オブ ザ "), ("オブ", " オブ "), ("ザ", " ザ ")]:
+            spaced = spaced.replace(src, dst)
+        spaced = re.sub(r"\s+", " ", spaced).strip()
+        if spaced and spaced != q:
+            variants.append(spaced)
+        out, seen = [], set()
+        for v in variants:
+            if v and v not in seen:
+                out.append(v)
+                seen.add(v)
+        return out
+
     def _search_igdb_once(q: str, headers: dict) -> list:
         safe_q = (q or "").replace('"', "").strip()
         if not safe_q:
@@ -1650,6 +1680,9 @@ def search_games(query: str) -> list:
         return []
     queries = [q]
     if re.search(r"[\u3040-\u30ff\u3400-\u9fff]", q):
+        for qv in _jp_game_query_variants(q):
+            if qv not in queries:
+                queries.append(qv)
         en_hint = _wikipedia_en_title_from_japanese(q)
         if en_hint and en_hint not in queries:
             queries.append(en_hint)
@@ -1932,6 +1965,13 @@ def _build_wiki_title_candidates(title: str) -> list[str]:
         for sep in splitters:
             if sep in base:
                 candidates.append(base.split(sep)[0].strip())
+    # エディション系末尾（大小文字無視）
+    t2 = re.sub(r"\s*-\s*[^-]*edition.*$", "", (t1 or t), flags=re.IGNORECASE).strip()
+    if t2 and t2 != (t1 or t):
+        candidates.append(t2)
+    t3 = re.sub(r"\b(collector'?s|complete|definitive|ultimate|deluxe|game of the year)\s+edition\b", "", (t1 or t), flags=re.IGNORECASE).strip(" -")
+    if t3 and t3 != (t1 or t):
+        candidates.append(t3)
     # サブタイトルを外した短縮版
     if ":" in (t1 or t):
         candidates.append((t1 or t).split(":")[0].strip())
@@ -1958,15 +1998,15 @@ def search_wikipedia_jp_title(title: str) -> str:
                     "action":  "query",
                     "list":    "search",
                     "srsearch": cand,
-                    "srlimit":  1,
+                    "srlimit":  5,
                     "format":  "json",
                 },
                 timeout=DEFAULT_TIMEOUT,
             )
             if search_res.status_code == 200:
                 items = search_res.json().get("query", {}).get("search", [])
-                if items:
-                    page_title = items[0].get("title")
+                for itm in items:
+                    page_title = itm.get("title")
                     if page_title:
                         ll_res = requests.get(
                             "https://en.wikipedia.org/w/api.php",
@@ -1992,7 +2032,7 @@ def search_wikipedia_jp_title(title: str) -> str:
                     "action":  "query",
                     "list":    "search",
                     "srsearch": cand,
-                    "srlimit":  1,
+                    "srlimit":  5,
                     "format":  "json",
                 },
                 timeout=DEFAULT_TIMEOUT,
