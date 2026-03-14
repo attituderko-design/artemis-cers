@@ -48,7 +48,7 @@ NOTION_HEADERS = {
 
 DEFAULT_TIMEOUT = 20
 REFRESH_BATCH_SIZE = 20
-APP_VERSION = "9.13"
+APP_VERSION = "9.20"
 
 # ============================================================
 # 媒体マッピング
@@ -1216,6 +1216,22 @@ def _download_image_bytes(url: str) -> tuple[bytes | None, str | None]:
     except Exception:
         return None, None
 
+def _composer_query_variants(name: str) -> list[str]:
+    base = (name or "").strip()
+    if not base:
+        return []
+    variants = [base]
+    for sep in [" / ", "/", "・", ",", " and "]:
+        if sep in base:
+            variants.append(base.split(sep, 1)[0].strip())
+    variants.append(re.sub(r"\s*\([^)]*\)\s*", " ", base).strip())
+    out, seen = [], set()
+    for v in variants:
+        if v and v not in seen:
+            out.append(v)
+            seen.add(v)
+    return out
+
 def get_composer_portrait_url(composer_name: str, artist_id: str) -> str | None:
     """
     1. Driveに既存の肖像画があればそのURLを返す
@@ -1230,7 +1246,8 @@ def get_composer_portrait_url(composer_name: str, artist_id: str) -> str | None:
         file_id = files[fname]
         try:
             service = get_drive_service_safe()
-            service.permissions().create(fileId=file_id, body={"role": "reader", "type": "anyone"}).execute()
+            if service:
+                service.permissions().create(fileId=file_id, body={"role": "reader", "type": "anyone"}).execute()
             return f"https://drive.google.com/uc?id={file_id}"
         except Exception:
             pass
@@ -1264,17 +1281,23 @@ def get_composer_portrait_url(composer_name: str, artist_id: str) -> str | None:
 
         # 3) 名前検索フォールバック（日本語→英語）
         if not image_candidates:
-            img_ja, qid_ja = _wiki_search_image(composer_name, "ja")
-            if img_ja:
-                image_candidates.append(img_ja)
-            if not qid and qid_ja:
-                qid = qid_ja
+            for cand_name in _composer_query_variants(composer_name):
+                img_ja, qid_ja = _wiki_search_image(cand_name, "ja")
+                if img_ja:
+                    image_candidates.append(img_ja)
+                if not qid and qid_ja:
+                    qid = qid_ja
+                if image_candidates:
+                    break
         if not image_candidates:
-            img_en, qid_en = _wiki_search_image(composer_name, "en")
-            if img_en:
-                image_candidates.append(img_en)
-            if not qid and qid_en:
-                qid = qid_en
+            for cand_name in _composer_query_variants(composer_name):
+                img_en, qid_en = _wiki_search_image(cand_name, "en")
+                if img_en:
+                    image_candidates.append(img_en)
+                if not qid and qid_en:
+                    qid = qid_en
+                if image_candidates:
+                    break
         if not image_candidates and qid:
             wd_img = _wikidata_p18_image_url(qid)
             if wd_img:
@@ -1292,16 +1315,19 @@ def get_composer_portrait_url(composer_name: str, artist_id: str) -> str | None:
                 seen.add(c)
 
         image_bytes, mimetype = None, None
+        picked_url = None
         for cand in uniq_candidates:
             image_bytes, mimetype = _download_image_bytes(cand)
             if image_bytes:
+                picked_url = cand
                 break
         if not image_bytes:
             return None
 
         service = get_drive_service_safe()
         if not service:
-            return None
+            # Driveが使えない環境でも、外部URLで表示は継続する
+            return picked_url
         if not mimetype:
             mimetype = "image/jpeg"
         media   = MediaIoBaseUpload(io.BytesIO(image_bytes), mimetype=mimetype, resumable=False)
@@ -1411,10 +1437,69 @@ def search_mb_works(artist_id: str, title_filter: str = "") -> list:
             "title":          title,
             "disambiguation": disambiguation,
             "type":           w.get("type", ""),
+            "first_release_date": (w.get("first-release-date") or "").strip(),
         })
     # タイトルでソート
     results.sort(key=lambda x: x["title"])
     return results
+
+def _format_wikidata_time(value: str) -> str:
+    raw = (value or "").strip()
+    if not raw:
+        return ""
+    m = re.match(r"^[+-]?(\d{4})-(\d{2})-(\d{2})", raw)
+    if not m:
+        return ""
+    y, mm, dd = m.group(1), m.group(2), m.group(3)
+    if mm == "00":
+        return y
+    if dd == "00":
+        return f"{y}-{mm}"
+    return f"{y}-{mm}-{dd}"
+
+@st.cache_data(ttl=86400)
+def get_mb_work_premiere_date(work_id: str) -> str:
+    work_id = (work_id or "").strip()
+    if not work_id:
+        return ""
+    try:
+        time.sleep(1.1)
+        wres = requests.get(
+            f"https://musicbrainz.org/ws/2/work/{work_id}",
+            params={"inc": "url-rels", "fmt": "json"},
+            headers=MB_HEADERS,
+            timeout=DEFAULT_TIMEOUT,
+        )
+        if wres.status_code != 200:
+            return ""
+        relations = wres.json().get("relations", [])
+        wiki_urls, qid = _extract_mb_wiki_relations(relations)
+        if not qid:
+            for wurl in wiki_urls:
+                _, qid_from_wiki = _wiki_image_from_page(wurl)
+                if qid_from_wiki:
+                    qid = qid_from_wiki
+                    break
+        if not qid:
+            return ""
+        dres = requests.get(
+            f"https://www.wikidata.org/wiki/Special:EntityData/{qid}.json",
+            timeout=DEFAULT_TIMEOUT,
+        )
+        if dres.status_code != 200:
+            return ""
+        entity = ((dres.json().get("entities") or {}).get(qid)) or {}
+        claims = entity.get("claims") or {}
+        candidates = []
+        for pid in ["P571", "P577"]:
+            for c in claims.get(pid, []) or []:
+                val = ((((c.get("mainsnak") or {}).get("datavalue") or {}).get("value")) or {}).get("time")
+                dt = _format_wikidata_time(val)
+                if dt:
+                    candidates.append(dt)
+        return sorted(candidates)[0] if candidates else ""
+    except Exception:
+        return ""
 
 
 # ============================================================
@@ -1436,6 +1521,39 @@ def get_igdb_token() -> str:
     return ""
 
 def search_games(query: str) -> list:
+    def _search_igdb_once(q: str, headers: dict) -> list:
+        body = f'search "{q}"; fields name,cover.url,first_release_date,genres.name,involved_companies.company.name,involved_companies.developer,involved_companies.publisher,summary; limit 20;'
+        res = requests.post("https://api.igdb.com/v4/games", headers=headers, data=body, timeout=DEFAULT_TIMEOUT)
+        if res.status_code != 200:
+            return []
+        rows = []
+        for item in res.json():
+            cover_url = ""
+            if item.get("cover", {}).get("url"):
+                cover_url = "https:" + item["cover"]["url"].replace("t_thumb", "t_cover_big")
+            release_year = ""
+            if item.get("first_release_date"):
+                release_year = datetime.utcfromtimestamp(item["first_release_date"]).strftime("%Y-%m-%d")
+            genres = [g["name"] for g in item.get("genres", [])]
+            developer, publisher = "", ""
+            for c in item.get("involved_companies", []):
+                name = c.get("company", {}).get("name", "")
+                if c.get("developer"):
+                    developer = name
+                if c.get("publisher"):
+                    publisher = name
+            rows.append({
+                "id":          item["id"],
+                "title":       item.get("name", ""),
+                "cover_url":   cover_url,
+                "release":     release_year,
+                "genres":      genres,
+                "developer":   developer,
+                "publisher":   publisher,
+                "media_type":  "game",
+            })
+        return rows
+
     token = get_igdb_token()
     if not token:
         return []
@@ -1443,35 +1561,23 @@ def search_games(query: str) -> list:
         "Client-ID":     IGDB_CLIENT_ID,
         "Authorization": f"Bearer {token}",
     }
-    body = f'search "{query}"; fields name,cover.url,first_release_date,genres.name,involved_companies.company.name,involved_companies.developer,involved_companies.publisher,summary; limit 20;'
-    res = requests.post("https://api.igdb.com/v4/games", headers=headers, data=body)
-    if res.status_code != 200:
+    q = (query or "").strip()
+    if not q:
         return []
-    results = []
-    for item in res.json():
-        cover_url = ""
-        if item.get("cover", {}).get("url"):
-            cover_url = "https:" + item["cover"]["url"].replace("t_thumb", "t_cover_big")
-        release_year = ""
-        if item.get("first_release_date"):
-            release_year = datetime.utcfromtimestamp(item["first_release_date"]).strftime("%Y-%m-%d")
-        genres = [g["name"] for g in item.get("genres", [])]
-        developer, publisher = "", ""
-        for c in item.get("involved_companies", []):
-            name = c.get("company", {}).get("name", "")
-            if c.get("developer"):   developer = name
-            if c.get("publisher"):   publisher = name
-        results.append({
-            "id":          item["id"],
-            "title":       item.get("name", ""),
-            "cover_url":   cover_url,
-            "release":     release_year,
-            "genres":      genres,
-            "developer":   developer,
-            "publisher":   publisher,
-            "media_type":  "game",
-        })
-    return results
+    queries = [q]
+    if re.search(r"[\u3040-\u30ff\u3400-\u9fff]", q):
+        en_hint = _wikipedia_en_title_from_japanese(q)
+        if en_hint and en_hint not in queries:
+            queries.append(en_hint)
+    all_results, seen = [], set()
+    for q_try in queries:
+        for row in _search_igdb_once(q_try, headers):
+            gid = row.get("id")
+            if gid in seen:
+                continue
+            seen.add(gid)
+            all_results.append(row)
+    return all_results
 
 def fetch_game_by_id(game_id: int) -> dict | None:
     token = get_igdb_token()
@@ -1482,7 +1588,7 @@ def fetch_game_by_id(game_id: int) -> dict | None:
         "Authorization": f"Bearer {token}",
     }
     body = f'fields name,cover.url,first_release_date,genres.name,involved_companies.company.name,involved_companies.developer,involved_companies.publisher,summary; where id = {int(game_id)};'
-    res = requests.post("https://api.igdb.com/v4/games", headers=headers, data=body)
+    res = requests.post("https://api.igdb.com/v4/games", headers=headers, data=body, timeout=DEFAULT_TIMEOUT)
     if res.status_code != 200:
         return None
     items = res.json()
@@ -1807,6 +1913,53 @@ def search_wikipedia_jp_title(title: str) -> str:
                 items = ja_res.json().get("query", {}).get("search", [])
                 if items:
                     return items[0].get("title", "") or ""
+    except Exception:
+        return ""
+    return ""
+
+@st.cache_data(ttl=86400)
+def _wikipedia_en_title_from_japanese(title: str) -> str:
+    q = (title or "").strip()
+    if not q:
+        return ""
+    try:
+        ja_res = requests.get(
+            "https://ja.wikipedia.org/w/api.php",
+            params={
+                "action": "query",
+                "list": "search",
+                "srsearch": q,
+                "srlimit": 1,
+                "format": "json",
+            },
+            timeout=DEFAULT_TIMEOUT,
+        )
+        if ja_res.status_code != 200:
+            return ""
+        items = ja_res.json().get("query", {}).get("search", [])
+        if not items:
+            return ""
+        page_title = items[0].get("title", "")
+        if not page_title:
+            return ""
+        ll_res = requests.get(
+            "https://ja.wikipedia.org/w/api.php",
+            params={
+                "action": "query",
+                "prop": "langlinks",
+                "lllang": "en",
+                "titles": page_title,
+                "format": "json",
+            },
+            timeout=DEFAULT_TIMEOUT,
+        )
+        if ll_res.status_code != 200:
+            return ""
+        pages = ll_res.json().get("query", {}).get("pages", {})
+        for page in pages.values():
+            langlinks = page.get("langlinks", [])
+            if langlinks:
+                return (langlinks[0].get("*") or "").strip()
     except Exception:
         return ""
     return ""
@@ -4180,12 +4333,15 @@ if mode == "新規登録":
                             perf_page = _get_page_from_state_or_api(selected_perf_ids[0])
                             perf_release, perf_watched, perf_rating, perf_location = _extract_performance_defaults(perf_page)
                         for w in selected_works:
+                            work_release = (w.get("first_release_date") or "").strip()
+                            if not work_release:
+                                work_release = get_mb_work_premiere_date(w.get("id", ""))
                             st.session_state.reg_cart.append({
                                 "cart_uid":    f"score_{uuid.uuid4().hex[:10]}",
                                 "jp_title":    w["title"],
                                 "en_title":    w["title"],
                                 "cover_url":   cover_url_final,
-                                "release":     perf_release or "",
+                                "release":     perf_release or work_release or "",
                                 "watched":     perf_watched or "",
                                 "rating":      perf_rating or "",
                                 "wlflg":       False,
