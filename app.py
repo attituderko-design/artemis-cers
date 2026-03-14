@@ -49,7 +49,7 @@ NOTION_HEADERS = {
 
 DEFAULT_TIMEOUT = 20
 REFRESH_BATCH_SIZE = 20
-APP_VERSION = "9.50"
+APP_VERSION = "9.51"
 GAME_JP_LEARNED_MAP_PATH = Path("data/game_jp_learned.json")
 
 # ============================================================
@@ -2671,7 +2671,8 @@ def resolve_game_jp_titles_bulk(en_titles: tuple[str, ...]) -> dict[str, str]:
         return out
     # 2) Wikipedia langlinks一括（高速）
     try:
-        chunk = 40
+        # URL長で取りこぼさないように小さめチャンクで処理
+        chunk = 5
         for i in range(0, len(unresolved), chunk):
             part = unresolved[i:i + chunk]
             res = requests.get(
@@ -2713,7 +2714,8 @@ def resolve_game_jp_titles_bulk(en_titles: tuple[str, ...]) -> dict[str, str]:
     # 4) Wikidata sitelinks/labels（ENタイトル直指定）
     still = [t for t in titles if t not in out]
     try:
-        chunk = 25
+        # titles結合が長いと失敗しやすいので小分け
+        chunk = 5
         for i in range(0, len(still), chunk):
             part = still[i:i + chunk]
             wres = requests.get(
