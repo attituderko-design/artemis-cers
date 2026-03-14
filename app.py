@@ -49,7 +49,7 @@ NOTION_HEADERS = {
 
 DEFAULT_TIMEOUT = 20
 REFRESH_BATCH_SIZE = 20
-APP_VERSION = "9.55"
+APP_VERSION = "9.56"
 GAME_JP_LEARNED_MAP_PATH = Path("data/game_jp_learned.json")
 WIKIMEDIA_HEADERS = {
     "User-Agent": "ArteMisCERS/9.x (metadata resolver; contact: app operator)",
@@ -5976,8 +5976,17 @@ if mode == "新規登録":
                         if stitle not in seen_series:
                             series_order.append(stitle)
                             seen_series.add(stitle)
-                    # 候補タブの体感速度を優先し、シリーズ名は即時表示
-                    series_labels = series_order
+                    # シリーズ名JPはキャッシュで段階的に補完（速度と可読性を両立）
+                    if "game_series_jp_cache" not in st.session_state:
+                        st.session_state.game_series_jp_cache = {}
+                    series_jp_cache = st.session_state.game_series_jp_cache
+                    unresolved_series = [s for s in series_order if s and not series_jp_cache.get(s)]
+                    if unresolved_series:
+                        fill = resolve_game_jp_titles_bulk(tuple(unresolved_series[:8]))
+                        if fill:
+                            series_jp_cache.update(fill)
+                            st.session_state.game_series_jp_cache = series_jp_cache
+                    series_labels = [f"{series_jp_cache.get(s)} / {s}" if series_jp_cache.get(s) else s for s in series_order]
                     selected_series = st.selectbox(
                         "① シリーズ候補",
                         options=list(range(len(series_order))),
