@@ -48,7 +48,7 @@ NOTION_HEADERS = {
 
 DEFAULT_TIMEOUT = 20
 REFRESH_BATCH_SIZE = 20
-APP_VERSION = "9.31"
+APP_VERSION = "9.32"
 
 # ============================================================
 # 媒体マッピング
@@ -1660,8 +1660,8 @@ def search_games(query: str) -> list:
         if not safe_q:
             return []
         bodies = [
-            f'search "{safe_q}"; fields name,cover.url,first_release_date,genres.name,involved_companies.company.name,involved_companies.developer,involved_companies.publisher,summary,total_rating_count,rating,category; limit 20;',
-            f'fields name,cover.url,first_release_date,genres.name,involved_companies.company.name,involved_companies.developer,involved_companies.publisher,summary,total_rating_count,rating,category; where name ~ *"{safe_q}"*; limit 20;',
+            f'search "{safe_q}"; fields name,cover.url,first_release_date,genres.name,involved_companies.company.name,involved_companies.developer,involved_companies.publisher,summary,total_rating_count,rating,category; limit 100;',
+            f'fields name,cover.url,first_release_date,genres.name,involved_companies.company.name,involved_companies.developer,involved_companies.publisher,summary,total_rating_count,rating,category; where name ~ *"{safe_q}"*; limit 100;',
         ]
         raw_items = []
         for body in bodies:
@@ -2247,6 +2247,32 @@ def _wikipedia_en_title_candidates_from_japanese(title: str, limit: int = 8) -> 
                 if enwiki and enwiki not in seen:
                     out.append(enwiki)
                     seen.add(enwiki)
+                    if len(out) >= limit:
+                        return out
+    except Exception:
+        return out
+    if out:
+        return out
+    # 最終フォールバック: 英語側検索でも候補取得を試す
+    try:
+        eres = requests.get(
+            "https://www.wikidata.org/w/api.php",
+            params={
+                "action": "wbsearchentities",
+                "search": q,
+                "language": "en",
+                "type": "item",
+                "limit": max(1, min(limit, 10)),
+                "format": "json",
+            },
+            timeout=DEFAULT_TIMEOUT,
+        )
+        if eres.status_code == 200:
+            for item in eres.json().get("search", []) or []:
+                label = (item.get("label") or "").strip()
+                if label and label not in seen:
+                    out.append(label)
+                    seen.add(label)
                     if len(out) >= limit:
                         return out
     except Exception:
@@ -4885,7 +4911,8 @@ if mode == "新規登録":
                     reg_ids = get_registered_ids(st.session_state.pages)
                     filtered, excluded = filter_registered(results, media_label, reg_ids)
                     st.session_state.new_search_raw_count = len(results or [])
-                    st.session_state.new_search_results  = filtered[:20]
+                    display_cap = 200 if media_label == "ゲーム" else 20
+                    st.session_state.new_search_results  = filtered[:display_cap]
                     st.session_state.new_search_excluded = excluded
                     st.session_state.new_search_done     = True
                     st.session_state.confirm_reg         = None
