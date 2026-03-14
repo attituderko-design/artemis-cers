@@ -50,7 +50,7 @@ NOTION_HEADERS = {
 
 DEFAULT_TIMEOUT = 20
 REFRESH_BATCH_SIZE = 20
-APP_VERSION = "9.83"
+APP_VERSION = "9.84"
 GAME_JP_LEARNED_MAP_PATH = Path("data/game_jp_learned.json")
 WIKIMEDIA_HEADERS = {
     "User-Agent": "ArteMisCERS/9.x (metadata resolver; contact: app operator)",
@@ -6523,7 +6523,7 @@ if mode == "新規登録":
                             st.caption(f"・{t}")
     
                 if results_list and media_label == "ゲーム":
-                    # ゲームは「シリーズ→作品」の2段階で候補を絞る（画像は作品確定後に取得）
+                    # ゲームは「タイトル候補→作品」の2段階で候補を絞る（画像は作品確定後に取得）
                     series_order = []
                     seen_series = set()
                     for g in results_list:
@@ -6543,7 +6543,7 @@ if mode == "新規登録":
                             st.session_state.game_series_jp_cache = series_jp_cache
                     series_labels = [f"{series_jp_cache.get(s)} / {s}" if series_jp_cache.get(s) else s for s in series_order]
                     selected_series = st.selectbox(
-                        "① シリーズ候補",
+                        "① タイトル候補",
                         options=list(range(len(series_order))),
                         format_func=lambda i: series_labels[i],
                         key="game_series_pick",
@@ -6568,6 +6568,24 @@ if mode == "新規登録":
                                     seen_id.add(g.get("id"))
                             if extra:
                                 work_list.extend(extra)
+                    # 表示順をクエリ適合度で調整（誤混入を下位に）
+                    if work_list:
+                        q_keys = _game_query_match_keys(q_raw)
+                        def _date_rank(v: str) -> int:
+                            s = (v or "").strip()
+                            if not s:
+                                return 99999999
+                            try:
+                                return int(s.replace("-", ""))
+                            except Exception:
+                                return 99999999
+                        def _work_rank(x: dict):
+                            tkey = _norm_game_match_key(x.get("title", ""))
+                            akeys = {_norm_game_match_key(a) for a in (x.get("alt_titles") or []) if (a or "").strip()}
+                            exact = 0 if (tkey in q_keys or bool(akeys & q_keys)) else 1
+                            noisy = 1 if _is_noisy_game_title(x.get("title", "")) else 0
+                            return (exact, noisy, _date_rank(x.get("release", "")))
+                        work_list = sorted(work_list, key=_work_rank)
                     official_only = st.checkbox("公式寄り候補のみ表示", value=True, key="game_official_only")
                     if official_only:
                         def _is_official_like(x: dict) -> bool:
