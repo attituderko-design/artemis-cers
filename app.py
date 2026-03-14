@@ -48,7 +48,7 @@ NOTION_HEADERS = {
 
 DEFAULT_TIMEOUT = 20
 REFRESH_BATCH_SIZE = 20
-APP_VERSION = "9.09"
+APP_VERSION = "9.10"
 
 # ============================================================
 # 媒体マッピング
@@ -3301,26 +3301,28 @@ if mode == "新規登録":
                 "例: 絵画 / 写真 / 現代美術" if media_label == "展示会" else
                 "例: 祭り / 花火 / フェス"
             )
-            event_title = st.text_input(
+            event_title = clearable_text_input(
                 "公演名 *",
                 placeholder=event_title_placeholder.get(media_label, "例: タイトルを入力"),
                 key="ev_title",
             )
-            event_creator = st.text_input(
+            event_creator = clearable_text_input(
                 creator_label,
                 placeholder=creator_placeholder,
                 key="ev_creator",
             )
             col_cast, col_genre = st.columns([1, 1])
-            event_cast = col_cast.text_input(
+            event_cast = clearable_text_input(
                 cast_label,
+                "ev_cast",
                 placeholder=cast_placeholder,
-                key="ev_cast",
+                container=col_cast,
             )
-            event_genre = col_genre.text_input(
+            event_genre = clearable_text_input(
                 "ジャンル",
+                "ev_genre",
                 placeholder=genre_placeholder,
-                key="ev_genre",
+                container=col_genre,
             )
             if media_label in ("展示会", "イベント"):
                 col_start, col_end, col_watch = st.columns([1, 1, 1])
@@ -3434,10 +3436,10 @@ if mode == "新規登録":
                 if show_song_search and use_mb:
                     st.caption("🔍 楽曲検索（MusicBrainz）")
                     st.caption("1) 作曲家を検索 → 2) 作曲家を確定 → 3) 曲名で検索 → 4) 曲を追加")
-                    ev_composer_input = st.text_input(
+                    ev_composer_input = clearable_text_input(
                         "1. 作曲家を検索",
+                        "ev_composer",
                         placeholder="例: Beethoven / ベートーヴェン",
-                        key="ev_composer",
                     )
                     if st.button("🔍 作曲家を検索", key="ev_mb_search"):
                         if ev_composer_input.strip():
@@ -3472,7 +3474,7 @@ if mode == "新規登録":
                             st.success(f"作曲家を確定: {ev_selected_comp.get('name', '')}")
 
                     if ev_selected_comp:
-                        ev_title_filter = st.text_input("3. 検索ワード（曲名）", placeholder="例: Symphony No.5", key="ev_title_filter")
+                        ev_title_filter = clearable_text_input("3. 検索ワード（曲名）", "ev_title_filter", placeholder="例: Symphony No.5")
                         c_mb1, c_mb2 = st.columns([1, 1])
                         if c_mb1.button("🔍 曲名で検索", key="ev_mb_fetch_works"):
                             if not ev_title_filter.strip():
@@ -3503,8 +3505,8 @@ if mode == "新規登録":
                 if show_song_search and use_itunes:
                     st.caption("🔍 楽曲検索（iTunes）")
                     col_it_art, col_it_title = st.columns([1, 1])
-                    it_artist_input = col_it_art.text_input("アーティスト名", placeholder="例: Queen / 米津玄師", key="ev_it_artist")
-                    it_title_input  = col_it_title.text_input("曲名", placeholder="例: Bohemian Rhapsody", key="ev_it_title")
+                    it_artist_input = clearable_text_input("アーティスト名", "ev_it_artist", placeholder="例: Queen / 米津玄師", container=col_it_art)
+                    it_title_input  = clearable_text_input("曲名", "ev_it_title", placeholder="例: Bohemian Rhapsody", container=col_it_title)
 
                     if st.button("🔍 曲を検索", key="ev_it_search"):
                         q = " ".join(filter(None, [it_artist_input, it_title_input]))
@@ -3546,7 +3548,7 @@ if mode == "新規登録":
                 score_pages = _get_score_pages()
                 if not st.session_state.get("last_notion_load_ok", True):
                     st.warning("⚠️ 演奏曲の取得に失敗しました。手動で再読み込みしてください。")
-                score_query = st.text_input("演奏曲名で検索", key="ev_score_query", placeholder="例: 交響曲第5番")
+                score_query = clearable_text_input("演奏曲名で検索", "ev_score_query", placeholder="例: 交響曲第5番")
                 matches = []
                 if score_query:
                     q = score_query.strip().lower()
@@ -3907,9 +3909,9 @@ if mode == "新規登録":
             st.divider()
             st.caption("1) 作曲家を検索 → 2) 作曲家を確定 → 3) 曲名で検索 → 4) 曲を選択")
 
-            composer_input = st.text_input(
+            composer_input = clearable_text_input(
                 "1. 作曲家を検索",
-                key="mb_composer_query",
+                "mb_composer_query",
                 placeholder="例: Beethoven / ベートーヴェン",
             )
             if st.button("🔍 作曲家を検索", key="mb_composer_search"):
@@ -3953,9 +3955,9 @@ if mode == "新規登録":
                     st.success(f"作曲家を確定: {selected_comp.get('name', '')}")
 
             if selected_comp:
-                work_title_filter = st.text_input(
+                work_title_filter = clearable_text_input(
                     "3. 検索ワード（曲名）",
-                    key="mb_work_title_filter",
+                    "mb_work_title_filter",
                     placeholder="例: Symphony no.5 / Piano Concerto",
                 )
                 col_work_search, col_work_all = st.columns([1, 1])
