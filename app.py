@@ -48,7 +48,7 @@ NOTION_HEADERS = {
 
 DEFAULT_TIMEOUT = 20
 REFRESH_BATCH_SIZE = 20
-APP_VERSION = "9.39"
+APP_VERSION = "9.40"
 
 # ============================================================
 # 媒体マッピング
@@ -5536,13 +5536,24 @@ if mode == "新規登録":
                             st.caption(f"表示上限: {max_show}件（{len(work_list)}件中）")
                             work_list = work_list[:max_show]
                         if work_list:
+                            user_jp_query = (st.session_state.get("inp_jp_main") or st.session_state.get("last_game_query_jp") or "").strip()
+                            jp_labels = []
+                            for w in work_list:
+                                en_t = w.get("title", "")
+                                jp_t = (
+                                    w.get("jp_title")
+                                    or search_game_jp_title_precise(en_t)
+                                    or search_game_jp_title_from_query(user_jp_query, en_t)
+                                )
+                                jp_labels.append(jp_t if jp_t else "（JP未解決）")
                             pick_idx = st.radio(
                                 "作品を選択",
                                 options=list(range(len(work_list))),
-                                format_func=lambda i: f"{work_list[i].get('title','')}  /  {work_list[i].get('release','不明')}  /  {work_list[i].get('variant_label') or _game_variant_label(work_list[i].get('title',''))}",
+                                format_func=lambda i: f"{jp_labels[i]}  /  {work_list[i].get('title','')}  /  {work_list[i].get('release','不明')}  /  {work_list[i].get('variant_label') or _game_variant_label(work_list[i].get('title',''))}",
                                 key="game_work_pick",
                             )
                             picked = dict(work_list[pick_idx])
+                            picked["jp_title"] = jp_labels[pick_idx] if jp_labels[pick_idx] != "（JP未解決）" else picked.get("jp_title", "")
                             if st.button("🖼 画像候補を取得", key="game_fetch_cover_cands"):
                                 q_hint = (st.session_state.get("inp_en_main") or st.session_state.get("inp_jp_main") or "")
                                 cands = _build_game_cover_candidates(picked, query_hint=q_hint)
