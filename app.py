@@ -50,7 +50,7 @@ NOTION_HEADERS = {
 
 DEFAULT_TIMEOUT = 20
 REFRESH_BATCH_SIZE = 20
-APP_VERSION = "9.70"
+APP_VERSION = "9.71"
 GAME_JP_LEARNED_MAP_PATH = Path("data/game_jp_learned.json")
 WIKIMEDIA_HEADERS = {
     "User-Agent": "ArteMisCERS/9.x (metadata resolver; contact: app operator)",
@@ -2994,7 +2994,7 @@ def _query_game_jp_dict_rows() -> list[dict]:
         st.session_state["_game_jp_dict_last_error"] = "NOTION_GAME_JP_DICT_DB_ID が未設定"
         return []
     try:
-        rows = _query_notion_database_all_service(NOTION_GAME_JP_DICT_DB_ID, NOTION_HEADERS) or []
+        rows = _query_notion_database_all_service(api_request, NOTION_HEADERS, NOTION_GAME_JP_DICT_DB_ID) or []
         st.session_state["_game_jp_dict_last_error"] = ""
         return rows
     except Exception as e:
