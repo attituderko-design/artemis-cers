@@ -48,7 +48,7 @@ NOTION_HEADERS = {
 
 DEFAULT_TIMEOUT = 20
 REFRESH_BATCH_SIZE = 20
-APP_VERSION = "9.03"
+APP_VERSION = "9.04"
 
 # ============================================================
 # 媒体マッピング
@@ -3382,7 +3382,6 @@ if mode == "新規登録":
                     render_song_list("ev_setlist_encore", MAX_ENCORE, f"🎊 アンコール（最大{MAX_ENCORE}曲）")
 
                 # ── 楽曲検索（出演はクラシック/ポピュラーを切替可）──
-                st.divider()
                 use_mb = is_concert
                 use_itunes = is_live
                 if is_performance:
@@ -3394,8 +3393,11 @@ if mode == "新規登録":
                     )
                     use_mb = search_mode in ("クラシック（MusicBrainz）", "両方")
                     use_itunes = search_mode in ("ポピュラー（iTunes）", "両方")
+                show_song_search = setlist_tab == "楽曲検索・追加" and (use_mb or use_itunes)
+                if show_song_search:
+                    st.divider()
 
-                if setlist_tab == "楽曲検索・追加" and use_mb:
+                if show_song_search and use_mb:
                     st.caption("🔍 楽曲検索（MusicBrainz）")
                     st.caption("1) 作曲家を検索 → 2) 作曲家を確定 → 3) 曲名で検索 → 4) 曲を追加")
                     ev_composer_input = st.text_input(
@@ -3464,7 +3466,7 @@ if mode == "新規登録":
                                 add_songs_to_slot("ev_setlist_encore", [w["title"]], MAX_ENCORE)
                                 st.rerun()
 
-                if setlist_tab == "楽曲検索・追加" and use_itunes:
+                if show_song_search and use_itunes:
                     st.caption("🔍 楽曲検索（iTunes）")
                     col_it_art, col_it_title = st.columns([1, 1])
                     it_artist_input = col_it_art.text_input("アーティスト名", placeholder="例: Queen / 米津玄師", key="ev_it_artist")
@@ -3721,6 +3723,16 @@ if mode == "新規登録":
                 key="active_score_tab",
                 label_visibility="collapsed",
             )
+            score_cart_count = len(st.session_state.get("reg_cart", []))
+            score_step = "1/2 検索" if active_score_tab == "検索" else "2/2 登録リスト"
+            st.caption(f"進捗: {score_step}  |  登録予定 {score_cart_count} 件")
+            s_nav1, s_nav2 = st.columns(2)
+            if s_nav1.button("🔎 検索へ", key="score_nav_search"):
+                st.session_state.active_score_tab_next = "検索"
+                st.rerun()
+            if s_nav2.button("🧺 登録リストへ", key="score_nav_cart"):
+                st.session_state.active_score_tab_next = "登録リスト"
+                st.rerun()
 
             if active_score_tab == "登録リスト":
                 reg_cart = st.session_state.get("reg_cart", [])
@@ -4172,6 +4184,23 @@ if mode == "新規登録":
             key="active_reg_tab",
             label_visibility="collapsed",
         )
+        reg_cart_count = len(st.session_state.get("reg_cart", []))
+        if active_tab == "検索":
+            reg_step = "1/4 検索"
+        elif active_tab == "候補":
+            reg_step = "2/4 候補"
+        elif active_tab == "登録リスト":
+            reg_step = "3/4 登録リスト"
+        else:
+            reg_step = "4/4 確認"
+        st.caption(f"進捗: {reg_step}  |  登録予定 {reg_cart_count} 件")
+        nav_labels = ["検索", "候補", "登録リスト"] + (["確認"] if "確認" in tab_options else [])
+        nav_cols = st.columns(len(nav_labels))
+        for i, label in enumerate(nav_labels):
+            icon = "✅" if label == active_tab else "➡"
+            if nav_cols[i].button(f"{icon} {label}", key=f"reg_nav_{label}"):
+                st.session_state.active_reg_tab_next = label
+                st.rerun()
 
         if active_tab == "検索":
             reg_cart_hint = st.session_state.get("reg_cart", [])
