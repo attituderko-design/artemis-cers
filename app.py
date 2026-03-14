@@ -48,7 +48,7 @@ NOTION_HEADERS = {
 
 DEFAULT_TIMEOUT = 20
 REFRESH_BATCH_SIZE = 20
-APP_VERSION = "9.38"
+APP_VERSION = "9.39"
 
 # ============================================================
 # 媒体マッピング
@@ -174,6 +174,7 @@ def reset_new_register_state():
         "ev_start", "ev_end", "ev_watch", "ev_watch2", "ev_rating", "ev_wl",
         "new_search_results", "new_search_done", "new_search_excluded",
         "new_search_raw_count",
+        "last_game_query_jp",
         "bulk_checked", "confirm_reg", "reg_cart",
         "album_tracks_cache", "album_tracks_id",
         # location_search_ui
@@ -2429,6 +2430,14 @@ def search_game_jp_title_precise(en_title: str) -> str:
     title = (en_title or "").strip()
     if not title:
         return ""
+    key = _norm_game_title_key(title)
+    if key in GAME_TITLE_JP_MANUAL:
+        return GAME_TITLE_JP_MANUAL[key]
+    # 版情報付きタイトルを正規化して再判定
+    base = re.sub(r"\s*-\s*[^-]*(edition|bundle|collection|pack).*$", "", title, flags=re.IGNORECASE).strip()
+    base_key = _norm_game_title_key(base)
+    if base_key in GAME_TITLE_JP_MANUAL:
+        return GAME_TITLE_JP_MANUAL[base_key]
     jp = search_wikipedia_jp_title(title)
     if jp:
         return jp
@@ -2472,6 +2481,9 @@ def search_game_jp_title_from_query(jp_query: str, en_title: str = "") -> str:
     q = (jp_query or "").strip()
     if not q:
         return ""
+    q_compact = re.sub(r"\s+", "", q)
+    if "ブレスオブザワイルド" in q_compact and "the legend of zelda" in (en_title or "").lower():
+        return "ゼルダの伝説 ブレス オブ ザ ワイルド"
     probes = [q, f"{q} ゲーム"]
     en = (en_title or "").lower()
     if "the legend of zelda" in en:
@@ -2548,6 +2560,17 @@ def _dedupe_keep_order(seq: list[str]) -> list[str]:
 GAME_QUERY_ALIASES = {
     "ゼルダ": ["ゼルダの伝説", "The Legend of Zelda"],
 }
+
+GAME_TITLE_JP_MANUAL = {
+    "the legend of zelda: breath of the wild": "ゼルダの伝説 ブレス オブ ザ ワイルド",
+    "the legend of zelda: breath of the wild - the champions' ballad": "ゼルダの伝説 ブレス オブ ザ ワイルド 英傑たちの詩",
+    "the legend of zelda: breath of the wild - the master trials": "ゼルダの伝説 ブレス オブ ザ ワイルド 試練の覇者",
+}
+
+def _norm_game_title_key(title: str) -> str:
+    t = (title or "").strip().lower()
+    t = re.sub(r"\s+", " ", t)
+    return t
 
 def _expand_game_query_aliases(query: str) -> list[str]:
     q = (query or "").strip()
@@ -5183,6 +5206,7 @@ if mode == "新規登録":
                         results = search_albums(query or "", artist=creator_input or None)
                     elif media_label == "ゲーム":
                         gq = query or jp_input
+                        st.session_state.last_game_query_jp = jp_input or ""
                         results = _search_games_for_ui(gq)
                         if not results and _contains_japanese(gq):
                             st.session_state.game_series_suggestions = search_game_series_candidates(gq, limit=10)
@@ -5295,7 +5319,8 @@ if mode == "新規登録":
                                 title = reg.get("cand_en") or reg.get("jp_input") or ""
                                 new_jp = search_game_jp_title_precise(title)
                                 if not new_jp:
-                                    new_jp = search_game_jp_title_from_query(reg.get("jp_input") or "", title)
+                                    q_hint = reg.get("jp_input") or st.session_state.get("last_game_query_jp") or ""
+                                    new_jp = search_game_jp_title_from_query(q_hint, title)
 
                             if new_jp:
                                 current_jp = (reg.get("jp_input") or "").strip()
@@ -5541,7 +5566,7 @@ if mode == "新規登録":
                             st.image(selected_work["cover_url"], width=240)
                         c1, c2 = st.columns(2)
                         if c1.button("✅ 単体登録", key="game_single_from_selected"):
-                            user_jp_query = (st.session_state.get("inp_jp_main") or "").strip()
+                            user_jp_query = (st.session_state.get("inp_jp_main") or st.session_state.get("last_game_query_jp") or "").strip()
                             picked_jp = (
                                 selected_work.get("jp_title")
                                 or search_game_jp_title_precise(selected_work.get("title", ""))
@@ -5561,7 +5586,7 @@ if mode == "新規登録":
                             st.session_state.active_reg_tab_next = "確認"
                             st.rerun()
                         if c2.button("📋 登録リストに追加", key="game_cart_from_selected"):
-                            user_jp_query = (st.session_state.get("inp_jp_main") or "").strip()
+                            user_jp_query = (st.session_state.get("inp_jp_main") or st.session_state.get("last_game_query_jp") or "").strip()
                             picked_jp = (
                                 selected_work.get("jp_title")
                                 or search_game_jp_title_precise(selected_work.get("title", ""))
