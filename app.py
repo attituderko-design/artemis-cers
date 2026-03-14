@@ -48,7 +48,7 @@ NOTION_HEADERS = {
 
 DEFAULT_TIMEOUT = 20
 REFRESH_BATCH_SIZE = 20
-APP_VERSION = "9.25"
+APP_VERSION = "9.26"
 
 # ============================================================
 # 媒体マッピング
@@ -2213,6 +2213,89 @@ def _wikipedia_en_title_candidates_from_japanese(title: str, limit: int = 8) -> 
     except Exception:
         return out
     return out
+
+@st.cache_data(ttl=86400)
+def _wiki_page_image_from_title(title: str, lang: str = "ja") -> str:
+    t = (title or "").strip()
+    if not t:
+        return ""
+    try:
+        res = requests.get(
+            f"https://{lang}.wikipedia.org/w/api.php",
+            params={
+                "action": "query",
+                "titles": t,
+                "prop": "pageimages|pageprops",
+                "piprop": "original|thumbnail",
+                "pithumbsize": 1200,
+                "format": "json",
+            },
+            timeout=DEFAULT_TIMEOUT,
+        )
+        if res.status_code != 200:
+            return ""
+        pages = (res.json().get("query") or {}).get("pages") or {}
+        for page in pages.values():
+            pageprops = page.get("pageprops") or {}
+            if pageprops.get("disambiguation") is not None:
+                continue
+            img = ((page.get("original") or {}).get("source")
+                   or (page.get("thumbnail") or {}).get("source"))
+            if img:
+                return img
+    except Exception:
+        return ""
+    return ""
+
+def _contains_japanese(text: str) -> bool:
+    return bool(re.search(r"[\u3040-\u30ff\u3400-\u9fff]", (text or "")))
+
+def _dedupe_keep_order(seq: list[str]) -> list[str]:
+    out, seen = [], set()
+    for x in seq:
+        if x and x not in seen:
+            out.append(x)
+            seen.add(x)
+    return out
+
+def _search_games_for_ui(query: str) -> list:
+    q = (query or "").strip()
+    if not q:
+        return []
+    base = search_games(q)
+    # JP入力でIGDBが弱い時は、Wikipedia言語リンク候補から英題検索を追加
+    if _contains_japanese(q):
+        en_candidates = _wikipedia_en_title_candidates_from_japanese(q, limit=8)
+        if not en_candidates:
+            one = _wikipedia_en_title_from_japanese(q)
+            if one:
+                en_candidates = [one]
+        if en_candidates:
+            seen = {r.get("id") for r in base}
+            for en in en_candidates:
+                for r in search_games(en):
+                    rid = r.get("id")
+                    if rid in seen:
+                        continue
+                    base.append(r)
+                    seen.add(rid)
+    enriched = []
+    for cand in base:
+        en_title = (cand.get("title") or "").strip()
+        jp_title = search_wikipedia_jp_title(en_title) if en_title else ""
+        if not jp_title and _contains_japanese(q):
+            jp_title = q
+        ja_img = _wiki_page_image_from_title(jp_title, "ja") if jp_title else ""
+        en_img = _wiki_page_image_from_title(en_title, "en") if en_title else ""
+        igdb_img = cand.get("cover_url", "")
+        cover_candidates = _dedupe_keep_order([ja_img, igdb_img, en_img])
+        row = dict(cand)
+        row["jp_title"] = jp_title or en_title
+        row["cover_candidates"] = cover_candidates
+        if cover_candidates:
+            row["cover_url"] = cover_candidates[0]
+        enriched.append(row)
+    return enriched
 
 def fetch_album_by_id(collection_id: int) -> dict | None:
     res = requests.get(
@@ -4721,7 +4804,7 @@ if mode == "新規登録":
                     elif media_label == "音楽アルバム":
                         results = search_albums(query or "", artist=creator_input or None)
                     elif media_label == "ゲーム":
-                        results = search_games(query or jp_input)
+                        results = _search_games_for_ui(query or jp_input)
                     elif media_label == "アニメ":
                         results = search_anime(query or jp_input)
                     else:
@@ -4837,6 +4920,21 @@ if mode == "新規登録":
                                     st.rerun()
                             else:
                                 st.warning("日本語タイトルが見つかりませんでした")
+                    if media_label == "ゲーム":
+                        cover_cands = reg.get("cover_candidates") or [reg.get("cover_url", "")]
+                        cover_cands = [u for u in cover_cands if u]
+                        if cover_cands:
+                            if len(cover_cands) == 1:
+                                st.caption("カバー候補: 1件")
+                            else:
+                                selected_cover = st.selectbox(
+                                    "カバー画像を選択",
+                                    options=list(range(len(cover_cands))),
+                                    format_func=lambda i: f"{i+1}. {format_cover_url(cover_cands[i], max_len=80)}",
+                                    key=f"game_cover_pick_confirm_{reg.get('igdb_id') or reg.get('cand_en','')}",
+                                )
+                                reg["cover_url"] = cover_cands[selected_cover]
+                            st.image(reg["cover_url"])
     
                     include_tracks = False
                     tracks_text    = ""
@@ -4989,7 +5087,7 @@ if mode == "新規登録":
                                     tmdb_release  = cand.get("release", "")
                                     media_type    = "game"
                                     cand_en       = cand["title"]
-                                    display_title = cand["title"]
+                                    display_title = cand.get("jp_title") or cand["title"]
                                     authors       = cand.get("developer", "")
                                 elif media_label == "アニメ":
                                     cover_url     = cand["cover_url"]
@@ -5022,6 +5120,8 @@ if mode == "新規登録":
                                     st.caption("📷 画像なし")
                                 if authors:      st.caption(f"{'著者' if media_label in ('書籍','漫画') else 'アーティスト' if media_label == '音楽アルバム' else '開発'}: {authors}")
                                 if tmdb_release: st.caption(f"{'出版' if media_label in ('書籍','漫画') else 'リリース'}: {tmdb_release}")
+                                if media_label == "ゲーム" and cand.get("jp_title") and cand.get("jp_title") != cand.get("title"):
+                                    st.caption(f"英題: {cand.get('title')}")
                                 if media_label not in ("書籍", "漫画", "音楽アルバム", "ゲーム", "アニメ"):
                                     st.caption(f"🆔 {cand['id']}")
 
@@ -5045,10 +5145,11 @@ if mode == "新規登録":
                                         st.session_state.confirm_reg = {
                                             "tmdb_id": 0, "cover_url": cand["cover_url"],
                                             "tmdb_release": cand.get("release", ""), "media_type": "game",
-                                            "cand_en": cand["title"], "jp_input": cand["title"],
+                                            "cand_en": cand["title"], "jp_input": cand.get("jp_title") or cand["title"],
                                             "book_authors": [cand.get("developer", "")], "book_genres": cand.get("genres", []),
                                             "isbn": "", "game_publisher": cand.get("publisher", ""),
                                             "igdb_id": cand.get("id"),
+                                            "cover_candidates": cand.get("cover_candidates", []),
                                         }
                                     elif media_label == "アニメ":
                                         st.session_state.confirm_reg = {
@@ -5103,12 +5204,13 @@ if mode == "新規登録":
                             }
                         elif media_label == "ゲーム":
                             cart_item = {
-                                "jp_title":   cand["title"], "en_title": cand["title"],
+                                "jp_title":   cand.get("jp_title") or cand["title"], "en_title": cand["title"],
                                 "cover_url":  cand["cover_url"], "release": cand.get("release", ""),
                                 "watched": "", "rating": "", "wlflg": False,
                                 "media_type": "game", "tmdb_id": 0,
                                 "details":    {"genres": cand.get("genres", []), "cast": cand.get("publisher", ""), "director": clean_author(cand.get("developer", "")), "score": None},
                                 "isbn":       "", "igdb_id": cand.get("id"),
+                                "cover_candidates": cand.get("cover_candidates", []),
                                 "location":   None, "media_label": media_label,
                             }
                         elif media_label == "アニメ":
@@ -5202,6 +5304,17 @@ if mode == "新規登録":
                         item["wlflg"]    = cols[4].checkbox("WL", value=item.get("wlflg", False), key=f"cart_wl_{idx}")
                         if cols[5].button("🗑", key=f"cart_del_{idx}"):
                             remove_indices.append(idx)
+                        if item_media == "ゲーム":
+                            cc = [u for u in item.get("cover_candidates", []) if u]
+                            if cc:
+                                picked = st.selectbox(
+                                    "ジャケット候補",
+                                    options=list(range(len(cc))),
+                                    format_func=lambda i: f"{i+1}. {format_cover_url(cc[i], max_len=80)}",
+                                    key=f"cart_game_cover_{idx}",
+                                )
+                                item["cover_url"] = cc[picked]
+                                st.image(item["cover_url"], width=220)
                         selected_loc = location_search_ui(
                             f"cart_{idx}",
                             item_media,
