@@ -50,7 +50,7 @@ NOTION_HEADERS = {
 
 DEFAULT_TIMEOUT = 20
 REFRESH_BATCH_SIZE = 20
-APP_VERSION = "9.63"
+APP_VERSION = "9.64"
 GAME_JP_LEARNED_MAP_PATH = Path("data/game_jp_learned.json")
 WIKIMEDIA_HEADERS = {
     "User-Agent": "ArteMisCERS/9.x (metadata resolver; contact: app operator)",
@@ -5863,6 +5863,9 @@ if mode == "新規登録":
                     elif media_label == "ゲーム":
                         gq = query or jp_input
                         st.session_state.last_game_query_jp = jp_input or ""
+                        # ゲーム検索ごとに辞書保存トライ状態を初期化
+                        st.session_state.pop("game_jp_autosaved", None)
+                        st.session_state.pop("_game_dict_upsert_warned", None)
                         results = _search_games_for_ui(gq)
                         if not results and _contains_japanese(gq):
                             st.session_state.game_series_suggestions = search_game_series_candidates(gq, limit=10)
