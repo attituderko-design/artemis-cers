@@ -48,7 +48,7 @@ NOTION_HEADERS = {
 
 DEFAULT_TIMEOUT = 20
 REFRESH_BATCH_SIZE = 20
-APP_VERSION = "9.40"
+APP_VERSION = "9.41"
 
 # ============================================================
 # 媒体マッピング
@@ -1663,8 +1663,8 @@ def search_games(query: str) -> list:
         if not safe_q:
             return []
         bodies = [
-            f'search "{safe_q}"; fields name,cover.url,first_release_date,genres.name,involved_companies.company.name,involved_companies.developer,involved_companies.publisher,summary,total_rating_count,rating,category; limit 100;',
-            f'fields name,cover.url,first_release_date,genres.name,involved_companies.company.name,involved_companies.developer,involved_companies.publisher,summary,total_rating_count,rating,category; where name ~ *"{safe_q}"*; limit 100;',
+            f'search "{safe_q}"; fields name,cover.url,first_release_date,genres.name,involved_companies.company.name,involved_companies.developer,involved_companies.publisher,platforms.name,summary,total_rating_count,rating,category; limit 100;',
+            f'fields name,cover.url,first_release_date,genres.name,involved_companies.company.name,involved_companies.developer,involved_companies.publisher,platforms.name,summary,total_rating_count,rating,category; where name ~ *"{safe_q}"*; limit 100;',
         ]
         raw_items = []
         for body in bodies:
@@ -1690,6 +1690,7 @@ def search_games(query: str) -> list:
             if item.get("first_release_date"):
                 release_year = datetime.utcfromtimestamp(item["first_release_date"]).strftime("%Y-%m-%d")
             genres = [g["name"] for g in item.get("genres", [])]
+            platforms = [p.get("name", "") for p in item.get("platforms", []) if p.get("name")]
             developer, publisher = "", ""
             for c in item.get("involved_companies", []):
                 name = c.get("company", {}).get("name", "")
@@ -1706,6 +1707,7 @@ def search_games(query: str) -> list:
                 "developer":   developer,
                 "publisher":   publisher,
                 "media_type":  "game",
+                "platforms":   normalize_platform_names(platforms),
                 "rating_count": int(item.get("total_rating_count") or 0),
                 "rating": float(item.get("rating") or 0.0),
                 "category": int(item.get("category") or -1),
@@ -2482,7 +2484,8 @@ def search_game_jp_title_from_query(jp_query: str, en_title: str = "") -> str:
     if not q:
         return ""
     q_compact = re.sub(r"\s+", "", q)
-    if "ブレスオブザワイルド" in q_compact and "the legend of zelda" in (en_title or "").lower():
+    en_low = (en_title or "").lower()
+    if "ブレスオブザワイルド" in q_compact and "the legend of zelda" in en_low and "breath of the wild" in en_low:
         return "ゼルダの伝説 ブレス オブ ザ ワイルド"
     probes = [q, f"{q} ゲーム"]
     en = (en_title or "").lower()
@@ -2600,6 +2603,33 @@ def _game_variant_label(title: str) -> str:
     if any(k in low for k in ["edition", "bundle", "collection", "pack"]):
         return "特装/同梱"
     return "本編候補"
+
+PLATFORM_NAME_MAP = {
+    "SNES": "スーパーファミコン",
+    "Super Nintendo Entertainment System": "スーパーファミコン",
+    "NES": "ファミリーコンピュータ",
+    "Nintendo Entertainment System": "ファミリーコンピュータ",
+    "Nintendo 64": "Nintendo 64",
+    "Nintendo GameCube": "ゲームキューブ",
+    "Game Boy": "ゲームボーイ",
+    "Game Boy Color": "ゲームボーイカラー",
+    "Game Boy Advance": "ゲームボーイアドバンス",
+    "Nintendo DS": "ニンテンドーDS",
+    "Nintendo 3DS": "ニンテンドー3DS",
+    "Wii": "Wii",
+    "Wii U": "Wii U",
+    "Nintendo Switch": "Nintendo Switch",
+    "Nintendo Switch 2": "Nintendo Switch 2",
+}
+
+def normalize_platform_names(names: list[str]) -> list[str]:
+    out = []
+    for n in names or []:
+        nn = (n or "").strip()
+        if not nn:
+            continue
+        out.append(PLATFORM_NAME_MAP.get(nn, nn))
+    return _dedupe_keep_order(out)
 
 def _game_base_title_candidates(title: str) -> list[str]:
     t = (title or "").strip()
@@ -5504,8 +5534,18 @@ if mode == "新規登録":
                         if stitle not in seen_series:
                             series_order.append(stitle)
                             seen_series.add(stitle)
-                    selected_series = st.selectbox("① シリーズ候補", series_order, key="game_series_pick")
-                    work_list = [g for g in results_list if (g.get("series_title") or _derive_game_series_title(g.get("title", ""))) == selected_series]
+                    series_labels = []
+                    for s in series_order:
+                        s_jp = search_game_jp_title_precise(s)
+                        series_labels.append(f"{s_jp} / {s}" if s_jp else s)
+                    selected_series = st.selectbox(
+                        "① シリーズ候補",
+                        options=list(range(len(series_order))),
+                        format_func=lambda i: series_labels[i],
+                        key="game_series_pick",
+                    )
+                    selected_series_name = series_order[selected_series]
+                    work_list = [g for g in results_list if (g.get("series_title") or _derive_game_series_title(g.get("title", ""))) == selected_series_name]
                     official_only = st.checkbox("公式寄り候補のみ表示", value=True, key="game_official_only")
                     if official_only:
                         def _is_official_like(x: dict) -> bool:
@@ -5549,7 +5589,7 @@ if mode == "新規登録":
                             pick_idx = st.radio(
                                 "作品を選択",
                                 options=list(range(len(work_list))),
-                                format_func=lambda i: f"{jp_labels[i]}  /  {work_list[i].get('title','')}  /  {work_list[i].get('release','不明')}  /  {work_list[i].get('variant_label') or _game_variant_label(work_list[i].get('title',''))}",
+                                format_func=lambda i: f"{jp_labels[i]}  /  {work_list[i].get('title','')}  /  {work_list[i].get('release','不明')}  /  {('・'.join((work_list[i].get('platforms') or [])[:3]) or 'ハード不明')}  /  {work_list[i].get('variant_label') or _game_variant_label(work_list[i].get('title',''))}",
                                 key="game_work_pick",
                             )
                             picked = dict(work_list[pick_idx])
