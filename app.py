@@ -50,7 +50,7 @@ NOTION_HEADERS = {
 
 DEFAULT_TIMEOUT = 20
 REFRESH_BATCH_SIZE = 20
-APP_VERSION = "9.80"
+APP_VERSION = "9.81"
 GAME_JP_LEARNED_MAP_PATH = Path("data/game_jp_learned.json")
 WIKIMEDIA_HEADERS = {
     "User-Agent": "ArteMisCERS/9.x (metadata resolver; contact: app operator)",
@@ -3515,10 +3515,13 @@ def _game_query_match_keys(query: str) -> set[str]:
         k = _norm_game_match_key(v)
         if k:
             keys.add(k)
+    # 作品特定クエリでは、Wikipedia候補を広く取りすぎると別作品混入の原因になるため
+    # 「単一の最有力ENタイトル」だけを採用する。
     if _contains_japanese(q):
         try:
-            for e in _wikipedia_en_title_candidates_from_japanese(q, limit=6):
-                k = _norm_game_match_key(e)
+            en_best = _wikipedia_en_title_from_japanese(q)
+            if en_best:
+                k = _norm_game_match_key(en_best)
                 if k:
                     keys.add(k)
         except Exception:
