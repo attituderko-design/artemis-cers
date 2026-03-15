@@ -50,7 +50,7 @@ NOTION_HEADERS = {
 
 DEFAULT_TIMEOUT = 20
 REFRESH_BATCH_SIZE = 20
-APP_VERSION = "10.07"
+APP_VERSION = "10.08"
 GAME_JP_LEARNED_MAP_PATH = Path("data/game_jp_learned.json")
 WIKIMEDIA_HEADERS = {
     "User-Agent": "ArteMisCERS/9.x (metadata resolver; contact: app operator)",
@@ -111,6 +111,8 @@ def format_premiere_source_message(source: str) -> str:
         return "Wikidata（作品QID）を利用"
     if src == "wikidata-search":
         return "Wikidata（検索解決）を利用"
+    if src == "wikidata-candidate":
+        return "Wikidata候補から手動選択"
     if src == "work-id-empty":
         return "作品IDが空のため未取得"
     if src.startswith("mb-work-"):
@@ -1858,6 +1860,93 @@ def get_mb_work_premiere_info(work_id: str, work_title: str = "", composer_name:
 
 def get_mb_work_premiere_date(work_id: str, work_title: str = "", composer_name: str = "") -> str:
     return get_mb_work_premiere_info(work_id, work_title, composer_name)[0]
+
+@st.cache_data(ttl=86400)
+def search_premiere_candidates(work_title: str, composer_name: str = "", limit: int = 8) -> list[dict]:
+    """Wikidata(P1191)から初演候補を取得（半自動選択用）"""
+    title_raw = (work_title or "").strip()
+    comp_raw = (composer_name or "").strip()
+    if not title_raw:
+        return []
+
+    def _clean_title(t: str) -> str:
+        x = re.sub(r"\([^)]*\)", " ", t or "")
+        x = re.sub(r"\[[^\]]*\]", " ", x)
+        x = re.sub(r"\s+", " ", x).strip()
+        return x
+
+    def _norm_tokens(s: str) -> set[str]:
+        x = re.sub(r"[^0-9A-Za-z\u00C0-\u024F\u3040-\u30FF\u3400-\u9FFF]+", " ", (s or "").lower())
+        return {tok for tok in x.split() if tok}
+
+    title_clean = _clean_title(title_raw)
+    qlist = []
+    if title_raw and comp_raw:
+        qlist.append(f"{title_raw} {comp_raw}")
+    if title_clean and comp_raw and title_clean != title_raw:
+        qlist.append(f"{title_clean} {comp_raw}")
+    qlist.append(title_raw)
+    if title_clean != title_raw:
+        qlist.append(title_clean)
+
+    qids = []
+    for q in qlist:
+        qids.extend(_wikidata_search_qids(q, "en", limit=6))
+        qids.extend(_wikidata_search_qids(q, "ja", limit=4))
+    seen_qid = set()
+    uniq_qids = []
+    for qid in qids:
+        if qid and qid not in seen_qid:
+            uniq_qids.append(qid)
+            seen_qid.add(qid)
+
+    title_tokens = _norm_tokens(title_clean or title_raw)
+    comp_tokens = _norm_tokens(comp_raw)
+
+    out = []
+    for qid in uniq_qids:
+        entity = _wikidata_entity(qid)
+        if not entity:
+            continue
+        claims = entity.get("claims") or {}
+        dates = []
+        for c in (claims.get("P1191") or []):
+            val = ((((c.get("mainsnak") or {}).get("datavalue") or {}).get("value")) or {}).get("time")
+            dt = _format_wikidata_time(val)
+            if dt:
+                dates.append(dt)
+        if not dates:
+            continue
+
+        labels = entity.get("labels") or {}
+        title = ((labels.get("ja") or {}).get("value") or (labels.get("en") or {}).get("value") or qid).strip()
+        sitelinks = entity.get("sitelinks") or {}
+        ja_title = (sitelinks.get("jawiki") or {}).get("title")
+        en_title = (sitelinks.get("enwiki") or {}).get("title")
+        urls = []
+        if ja_title:
+            urls.append(f"https://ja.wikipedia.org/wiki/{quote(ja_title)}")
+        if en_title:
+            urls.append(f"https://en.wikipedia.org/wiki/{quote(en_title)}")
+        if not urls:
+            urls.append(f"https://www.wikidata.org/wiki/{qid}")
+
+        cand_tokens = _norm_tokens(title)
+        score = len(title_tokens & cand_tokens) * 3
+        if comp_tokens and comp_tokens & _norm_tokens(" ".join(urls)):
+            score += 1
+        out.append(
+            {
+                "qid": qid,
+                "title": title,
+                "date": sorted(dates)[0],
+                "urls": urls,
+                "score": score,
+            }
+        )
+
+    out.sort(key=lambda x: (-x.get("score", 0), x.get("date", "9999-99-99"), x.get("title", "")))
+    return out[:limit]
 
 
 # ============================================================
@@ -6112,9 +6201,54 @@ if mode == "新規登録":
                                 if item.get("premiere_missing"):
                                     st.caption("ℹ️ 初演情報を確認できなかったため、リリース日は空欄です（必要なら手入力してください）")
                                     st.caption(f"ℹ️ 取得状況: {format_premiere_source_message(src)}")
+                                    cand_state_key = f"premiere_cands_{item_uid}"
+                                    cand_select_key = f"premiere_cand_idx_{item_uid}"
+                                    composer_name = (
+                                        ((item.get("details") or {}).get("director") or "").strip()
+                                        or ((item.get("details") or {}).get("creator") or "").strip()
+                                    )
+                                    if st.button("🔎 初演候補を検索", key=f"premiere_search_btn_{item_uid}"):
+                                        with st.spinner("初演候補を検索中..."):
+                                            candidates = search_premiere_candidates(
+                                                item.get("en_title") or item.get("jp_title") or "",
+                                                composer_name=composer_name,
+                                                limit=8,
+                                            )
+                                        st.session_state[cand_state_key] = candidates
+                                        st.session_state[cand_select_key] = 0
+                                    candidates = st.session_state.get(cand_state_key, [])
+                                    if candidates:
+                                        st.markdown("**初演候補（半自動選択）**")
+                                        picked_idx = st.radio(
+                                            "候補",
+                                            options=list(range(len(candidates))),
+                                            index=min(int(st.session_state.get(cand_select_key, 0) or 0), len(candidates) - 1),
+                                            format_func=lambda i: f"{candidates[i].get('date','')} / {candidates[i].get('title','(無題)')}",
+                                            key=f"premiere_pick_{item_uid}",
+                                        )
+                                        picked = candidates[picked_idx]
+                                        urls = [u for u in (picked.get("urls") or []) if u]
+                                        if urls:
+                                            st.markdown(f"🔗 ソース: [リンクを開く]({urls[0]})")
+                                            if len(urls) > 1:
+                                                for extra_u in urls[1:]:
+                                                    st.markdown(f"- [追加ソース]({extra_u})")
+                                        if st.button("✅ この初演日をリリース日に反映", key=f"premiere_apply_{item_uid}"):
+                                            item["release"] = picked.get("date", "")
+                                            item["premiere_missing"] = False
+                                            item["premiere_source"] = "wikidata-candidate"
+                                            if urls:
+                                                item["premiere_source_url"] = urls[0]
+                                            st.success("初演候補を反映しました")
+                                            st.rerun()
+                                    elif cand_state_key in st.session_state:
+                                        st.caption("ℹ️ 初演候補は見つかりませんでした")
                                 else:
                                     if src:
                                         st.caption(f"ℹ️ 初演情報ソース: {format_premiere_source_message(src)}")
+                                src_url = item.get("premiere_source_url")
+                                if src_url:
+                                    st.markdown(f"🔗 参照ソース: [リンクを開く]({src_url})")
                             cols = st.columns([2, 1, 2, 2, 1, 1])
                             item["jp_title"] = cols[0].text_input("日本語タイトル", value=item["jp_title"], key=f"cart_jp_{item_uid}")
                             item["release"]  = cols[1].text_input("リリース日", value=item.get("release", ""), key=f"cart_rel_{item_uid}")
