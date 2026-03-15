@@ -50,7 +50,7 @@ NOTION_HEADERS = {
 
 DEFAULT_TIMEOUT = 20
 REFRESH_BATCH_SIZE = 20
-APP_VERSION = "10.01"
+APP_VERSION = "10.02"
 GAME_JP_LEARNED_MAP_PATH = Path("data/game_jp_learned.json")
 WIKIMEDIA_HEADERS = {
     "User-Agent": "ArteMisCERS/9.x (metadata resolver; contact: app operator)",
@@ -6050,6 +6050,8 @@ if mode == "新規登録":
                         with st.expander(f"{idx+1}. {item['jp_title']}", expanded=True):
                             if item.get("media_type") == "score":
                                 st.caption(f"関連出演履歴: {len(_clean_relation_ids(item.get('relation_ids')))} 件")
+                                if item.get("premiere_missing"):
+                                    st.caption("ℹ️ 初演情報を確認できなかったため、リリース日は空欄です（必要なら手入力してください）")
                             cols = st.columns([2, 1, 2, 2, 1, 1])
                             item["jp_title"] = cols[0].text_input("日本語タイトル", value=item["jp_title"], key=f"cart_jp_{item_uid}")
                             item["release"]  = cols[1].text_input("リリース日", value=item.get("release", ""), key=f"cart_rel_{item_uid}")
@@ -6556,7 +6558,7 @@ if mode == "新規登録":
                                 "jp_title":    register_title,
                                 "en_title":    register_title,
                                 "cover_url":   cover_url_final,
-                                "release":     work_release or perf_release or "",
+                                "release":     work_release or "",
                                 "watched":     perf_watched or "",
                                 "rating":      perf_rating or "",
                                 "wlflg":       False,
@@ -6568,6 +6570,7 @@ if mode == "新規登録":
                                 "media_label": media_label,
                                 "relation_prop": "出演履歴" if selected_perf_ids else None,
                                 "relation_ids":  selected_perf_ids,
+                                "premiere_missing": (not bool(work_release)),
                                 "setlist_order": 0,
                                 "setlist_section": "本編",
                                 "played": True,
