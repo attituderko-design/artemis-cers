@@ -50,7 +50,7 @@ NOTION_HEADERS = {
 
 DEFAULT_TIMEOUT = 20
 REFRESH_BATCH_SIZE = 20
-APP_VERSION = "10.02"
+APP_VERSION = "10.03"
 GAME_JP_LEARNED_MAP_PATH = Path("data/game_jp_learned.json")
 WIKIMEDIA_HEADERS = {
     "User-Agent": "ArteMisCERS/9.x (metadata resolver; contact: app operator)",
@@ -6039,7 +6039,9 @@ if mode == "新規登録":
                                 perf_page = _get_page_from_state_or_api(rel_ids[0])
                                 d_release, d_watched, d_rating, d_location = _extract_performance_defaults(perf_page)
                                 if not item.get("release"):
-                                    item["release"] = d_release or ""
+                                    # 演奏曲のリリース日は「初演情報」を優先し、
+                                    # 出演履歴（公演日/公演リリース日）では補完しない
+                                    item["release"] = item.get("release", "")
                                 if not item.get("watched"):
                                     item["watched"] = d_watched or ""
                                 if not item.get("rating"):
