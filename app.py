@@ -113,6 +113,8 @@ def format_premiere_source_message(source: str) -> str:
         return "Wikidata（検索解決）を利用"
     if src == "wikidata-candidate":
         return "Wikidata候補から手動選択"
+    if src == "wikidata-candidate-partial":
+        return "Wikidata候補は年月日不足（リリース日は手入力）"
     if src == "work-id-empty":
         return "作品IDが空のため未取得"
     if src.startswith("mb-work-"):
@@ -1772,6 +1774,16 @@ def _normalize_human_date(text: str) -> str:
         return m.group(1)
     return ""
 
+def _date_precision(dt: str) -> str:
+    s = (dt or "").strip()
+    if re.match(r"^\d{4}-\d{2}-\d{2}$", s):
+        return "day"
+    if re.match(r"^\d{4}-\d{2}$", s):
+        return "month"
+    if re.match(r"^\d{4}$", s):
+        return "year"
+    return "unknown"
+
 def _strip_wiki_markup(text: str) -> str:
     s = (text or "").strip()
     if not s:
@@ -1867,6 +1879,7 @@ def _wiki_premiere_candidates(work_title: str, composer_name: str = "", limit: i
                             "qid": "",
                             "title": ptitle,
                             "date": dt,
+                            "precision": _date_precision(dt),
                             "urls": [url],
                             "score": 500 if lang == "ja" else 450,
                         }
@@ -2077,6 +2090,7 @@ def search_premiere_candidates(work_title: str, composer_name: str = "", limit: 
                 "qid": qid,
                 "title": title,
                 "date": sorted(dates)[0],
+                "precision": _date_precision(sorted(dates)[0]),
                 "urls": urls,
                 "score": score,
             }
@@ -2130,6 +2144,7 @@ def search_premiere_candidates_from_work(
             "qid": qid,
             "title": title,
             "date": sorted(dates)[0],
+            "precision": _date_precision(sorted(dates)[0]),
             "urls": urls,
             "score": 1000,  # Work ID由来は最優先
         }]
@@ -6422,6 +6437,8 @@ if mode == "新規登録":
                                 if item.get("premiere_missing"):
                                     st.caption("ℹ️ 初演情報を確認できなかったため、リリース日は空欄です（必要なら手入力してください）")
                                     st.caption(f"ℹ️ 取得状況: {format_premiere_source_message(src)}")
+                                    if item.get("premiere_partial"):
+                                        st.caption(f"ℹ️ 取得値: {item.get('premiere_partial_value','')}（年月日不足のため自動入力しません）")
                                     cand_state_key = f"premiere_cands_{item_uid}"
                                     cand_select_key = f"premiere_cand_idx_{item_uid}"
                                     composer_name = (
@@ -6449,6 +6466,9 @@ if mode == "新規登録":
                                             key=f"premiere_pick_{item_uid}",
                                         )
                                         picked = candidates[picked_idx]
+                                        picked_precision = (picked.get("precision") or _date_precision(picked.get("date", ""))).strip()
+                                        if picked_precision in ("year", "month"):
+                                            st.caption("ℹ️ この候補は年月日が不足しています。リリース日は手入力してください。")
                                         urls = [u for u in (picked.get("urls") or []) if u]
                                         if urls:
                                             st.markdown(f"🔗 ソース: [リンクを開く]({urls[0]})")
@@ -6456,12 +6476,19 @@ if mode == "新規登録":
                                                 for extra_u in urls[1:]:
                                                     st.markdown(f"- [追加ソース]({extra_u})")
                                         if st.button("✅ この初演日をリリース日に反映", key=f"premiere_apply_{item_uid}"):
-                                            item["release"] = picked.get("date", "")
-                                            item["premiere_missing"] = False
-                                            item["premiere_source"] = "wikidata-candidate"
+                                            if picked_precision == "day":
+                                                item["release"] = picked.get("date", "")
+                                                item["premiere_missing"] = False
+                                                item["premiere_source"] = "wikidata-candidate"
+                                            else:
+                                                item["release"] = ""
+                                                item["premiere_missing"] = True
+                                                item["premiere_source"] = "wikidata-candidate-partial"
+                                                item["premiere_partial"] = True
+                                                item["premiere_partial_value"] = picked.get("date", "")
                                             if urls:
                                                 item["premiere_source_url"] = urls[0]
-                                            st.success("初演候補を反映しました")
+                                            st.success("初演候補を反映しました（年月日不足の候補は手入力が必要です）")
                                             st.rerun()
                                     elif cand_state_key in st.session_state:
                                         st.caption("ℹ️ 初演候補は見つかりませんでした")
@@ -6973,6 +7000,14 @@ if mode == "新規登録":
                                     work_title=work_title,
                                     composer_name=comp_name,
                                 )
+                            release_precision = _date_precision(work_release)
+                            release_partial = release_precision in ("year", "month")
+                            if release_partial:
+                                # 日付が年/月までしかない場合はNotion日付誤差を避けるため未設定にする
+                                partial_value = work_release
+                                work_release = ""
+                            else:
+                                partial_value = ""
                             st.session_state.reg_cart.append({
                                 "cart_uid":    f"score_{uuid.uuid4().hex[:10]}",
                                 "jp_title":    register_title,
@@ -6992,6 +7027,8 @@ if mode == "新規登録":
                                 "relation_ids":  selected_perf_ids,
                                 "premiere_missing": (not bool(work_release)),
                                 "premiere_source": premiere_source if work_release else (premiere_source or "not-found"),
+                                "premiere_partial": release_partial,
+                                "premiere_partial_value": partial_value,
                                 "setlist_order": 0,
                                 "setlist_section": "本編",
                                 "played": True,
