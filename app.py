@@ -50,7 +50,7 @@ NOTION_HEADERS = {
 
 DEFAULT_TIMEOUT = 20
 REFRESH_BATCH_SIZE = 20
-APP_VERSION = "9.93"
+APP_VERSION = "9.94"
 GAME_JP_LEARNED_MAP_PATH = Path("data/game_jp_learned.json")
 WIKIMEDIA_HEADERS = {
     "User-Agent": "ArteMisCERS/9.x (metadata resolver; contact: app operator)",
@@ -1339,19 +1339,48 @@ def _wikidata_commons_category_images(qid: str, limit: int = 8) -> list[str]:
     except Exception:
         return []
 
-def _download_image_bytes(url: str) -> tuple[bytes | None, str | None]:
+def _download_image_bytes(url: str) -> tuple[bytes | None, str | None, str]:
     if not url:
-        return None, None
-    try:
-        res = requests.get(url, timeout=DEFAULT_TIMEOUT)
-        if res.status_code != 200 or not res.content:
-            return None, None
-        ctype = (res.headers.get("Content-Type") or "").split(";")[0].strip().lower()
-        if not ctype.startswith("image/"):
-            ctype = "image/jpeg"
-        return res.content, ctype
-    except Exception:
-        return None, None
+        return None, None, "empty-url"
+
+    def _normalize_url(raw: str) -> str:
+        try:
+            u = urlparse(raw)
+            host = (u.netloc or "").lower()
+            path = unquote(u.path or "")
+            if host.endswith("wikipedia.org") or host.endswith("wikimedia.org"):
+                if path.startswith("/wiki/File:"):
+                    fname = path.split("/wiki/File:", 1)[1]
+                    return f"https://commons.wikimedia.org/wiki/Special:FilePath/{quote(fname)}"
+            return raw
+        except Exception:
+            return raw
+
+    target = _normalize_url(url)
+    hdrs = {
+        "User-Agent": WIKIMEDIA_HEADERS.get("User-Agent", "ArteMisCERS/9.x"),
+        "Accept": "image/*,*/*;q=0.8",
+    }
+    last_err = "unknown"
+    for _ in range(2):
+        try:
+            res = requests.get(target, timeout=DEFAULT_TIMEOUT, headers=hdrs, allow_redirects=True)
+            if res.status_code != 200:
+                last_err = f"status={res.status_code}"
+                continue
+            if not res.content:
+                last_err = "empty-content"
+                continue
+            ctype = (res.headers.get("Content-Type") or "").split(";")[0].strip().lower()
+            if ctype.startswith("text/html"):
+                last_err = "html-response"
+                continue
+            if not ctype.startswith("image/"):
+                ctype = "image/jpeg"
+            return res.content, ctype, "ok"
+        except Exception as e:
+            last_err = f"exception={type(e).__name__}"
+    return None, None, last_err
 
 def _composer_query_variants(name: str) -> list[str]:
     base = (name or "").strip()
@@ -1542,13 +1571,19 @@ def get_composer_portrait_url(composer_name: str, artist_id: str) -> str | None:
 
         image_bytes, mimetype = None, None
         picked_url = None
+        failed_details = []
         for cand in uniq_candidates:
-            image_bytes, mimetype = _download_image_bytes(cand)
+            image_bytes, mimetype, why = _download_image_bytes(cand)
             if image_bytes:
                 picked_url = cand
                 break
+            if len(failed_details) < 5:
+                failed_details.append(f"{cand} -> {why}")
         if not image_bytes:
             debug_lines.append(f"download_failed_candidates={len(uniq_candidates)}")
+            if failed_details:
+                debug_lines.append("failed_samples:")
+                debug_lines.extend(failed_details)
             debug_lines.append("result=download-failed")
             set_portrait_debug(debug_lines)
             return None
