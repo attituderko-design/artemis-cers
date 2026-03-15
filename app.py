@@ -4661,6 +4661,8 @@ def create_notion_page(jp_title: str, en_title: str, media_type_label: str,
                        igdb_id: int | None = None,
                        itunes_id: int | None = None,
                        anilist_id: int | None = None,
+                       is_concerto: bool = False,
+                       soloists: str | None = None,
                        relation_prop: str | None = None,
                        relation_ids: list[str] | None = None) -> bool:
     """Notionに新規ページを作成してポスター・メタデータも一括登録"""
@@ -4701,6 +4703,15 @@ def create_notion_page(jp_title: str, en_title: str, media_type_label: str,
         properties["AniList_ID"] = {"number": anilist_id}
     if memo:
         properties["メモ"] = {"rich_text": [{"type": "text", "text": {"content": memo}}]}
+    # 演奏曲向け: 協奏曲フラグ / ソリスト（プロパティが存在する場合のみ）
+    if media_type == "score":
+        type_map = get_notion_db_property_types(NOTION_DB_ID)
+        concerto_prop = "協奏曲" if "協奏曲" in type_map else ("Concerto" if "Concerto" in type_map else "")
+        soloist_prop = "ソリスト" if "ソリスト" in type_map else ("Soloists" if "Soloists" in type_map else "")
+        if concerto_prop:
+            _put_notion_prop(properties, type_map, concerto_prop, bool(is_concerto))
+        if soloist_prop and (soloists is not None):
+            _put_notion_prop(properties, type_map, soloist_prop, str(soloists or "").strip())
     if location and location.get("lat") and location.get("lon"):
         place_payload = {
             "lat":  location["lat"],
@@ -6578,6 +6589,17 @@ if mode == "新規登録":
                                     value=item.get("part", ""),
                                     key=f"cart_part_{item_uid}",
                                 )
+                                cc1, cc2 = st.columns([1, 3])
+                                item["is_concerto"] = cc1.checkbox(
+                                    "協奏曲",
+                                    value=bool(item.get("is_concerto", False)),
+                                    key=f"cart_concerto_{item_uid}",
+                                )
+                                item["soloists"] = cc2.text_input(
+                                    "ソリスト名（複数は / 区切り）",
+                                    value=item.get("soloists", ""),
+                                    key=f"cart_soloists_{item_uid}",
+                                )
                                 rel_ids_for_cast = _clean_relation_ids(item.get("relation_ids"))
                                 cast_options = _get_performance_cast_names(rel_ids_for_cast[0]) if rel_ids_for_cast else []
                                 if cast_options:
@@ -6638,6 +6660,8 @@ if mode == "新規登録":
                                     igdb_id=item.get("igdb_id"),
                                     itunes_id=item.get("itunes_id"),
                                     anilist_id=item.get("anilist_id"),
+                                    is_concerto=bool(item.get("is_concerto", False)),
+                                    soloists=item.get("soloists", ""),
                                     location=item.get("location"),
                                     relation_prop=rel_prop,
                                     relation_ids=rel_ids,
@@ -7060,6 +7084,8 @@ if mode == "新規登録":
                                 "setlist_section": "本編",
                                 "played": True,
                                 "part": "",
+                                "is_concerto": False,
+                                "soloists": "",
                                 "players": [],
                                 "mb_work_id": w.get("id", ""),
                             })
