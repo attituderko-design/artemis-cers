@@ -50,7 +50,7 @@ NOTION_HEADERS = {
 
 DEFAULT_TIMEOUT = 20
 REFRESH_BATCH_SIZE = 20
-APP_VERSION = "10.06"
+APP_VERSION = "10.07"
 GAME_JP_LEARNED_MAP_PATH = Path("data/game_jp_learned.json")
 WIKIMEDIA_HEADERS = {
     "User-Agent": "ArteMisCERS/9.x (metadata resolver; contact: app operator)",
@@ -1740,7 +1740,7 @@ def _format_wikidata_time(value: str) -> str:
 
 @st.cache_data(ttl=86400)
 def get_mb_work_premiere_info(work_id: str, work_title: str = "", composer_name: str = "") -> tuple[str, str]:
-    def _extract_dates_from_qid(qid: str) -> list[str]:
+    def _extract_dates_from_qid(qid: str, strict_first_perf: bool = False) -> list[str]:
         if not qid:
             return []
         dres = wikimedia_get(
@@ -1753,7 +1753,8 @@ def get_mb_work_premiere_info(work_id: str, work_title: str = "", composer_name:
         claims = entity.get("claims") or {}
         candidates = []
         # P1191: date of first performance（最優先）
-        for pid in ["P1191", "P571", "P577"]:
+        pids = ["P1191"] if strict_first_perf else ["P1191", "P571", "P577"]
+        for pid in pids:
             for c in claims.get(pid, []) or []:
                 val = ((((c.get("mainsnak") or {}).get("datavalue") or {}).get("value")) or {}).get("time")
                 dt = _format_wikidata_time(val)
@@ -1845,7 +1846,8 @@ def get_mb_work_premiere_info(work_id: str, work_title: str = "", composer_name:
                 search_queries.append(title)
             for sq in search_queries:
                 for sq_qid in _wikidata_search_qids(sq, "en", limit=4):
-                    candidates.extend(_extract_dates_from_qid(sq_qid))
+                    # 検索解決は誤QID混入の可能性があるため、初演日(P1191)のみ採用
+                    candidates.extend(_extract_dates_from_qid(sq_qid, strict_first_perf=True))
                 if candidates:
                     break
         if candidates:
