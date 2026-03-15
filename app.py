@@ -6209,12 +6209,12 @@ if mode == "新規登録":
                     sel = st.selectbox("候補", options, key="ev_score_pick")
                     if sel != "（選択してください）":
                         picked = matches[options.index(sel) - 1]
-                        if st.button("＋ 追加", key="ev_score_add"):
+                        if st.button("🎼 曲を追加", key="ev_score_add"):
                             add_selected_score(picked["id"], picked["title"])
                             st.rerun()
                 elif score_query:
                     st.caption("候補が見つかりませんでした。")
-                    if st.button("＋ 新規作成して追加", key="ev_score_create"):
+                    if st.button("🆕 演奏曲を新規登録して追加", key="ev_score_create"):
                         with st.spinner("演奏曲を新規作成中..."):
                             ok = create_notion_page(
                                 jp_title=score_query, en_title=score_query,
@@ -6605,6 +6605,7 @@ if mode == "新規登録":
                     col_reg, col_clear = st.columns([2, 1])
                     with col_reg:
                         if st.button(f"{len(st.session_state.reg_cart)} 件を一括登録", type="primary", key="bulk_register_score"):
+                            total_count = len(st.session_state.get("reg_cart", []))
                             if not st.session_state.pages_loaded:
                                 with st.spinner("Notionデータ取得中..."):
                                     all_pages = load_notion_data()
@@ -6696,9 +6697,13 @@ if mode == "新規登録":
                                     success_count += 1
                                 prog.progress((n + 1) / len(st.session_state.reg_cart))
                                 time.sleep(0.2)
+                            fail_count = max(0, total_count - success_count)
                             for key in ["reg_cart", "mb_works", "mb_checked", "mb_composers"]:
                                 st.session_state.pop(key, None)
-                            st.success(f"{success_count} 件登録完了")
+                            if success_count > 0:
+                                st.success(f"✅ {success_count} 件登録完了" + (f"　❌ {fail_count} 件失敗" if fail_count else ""))
+                            else:
+                                st.error("❌ 登録できませんでした（0 件）")
                             reset_new_register_state()
                             if st.session_state.get("auto_reload_mode") == "partial":
                                 for p in st.session_state.get("created_pages", []):
@@ -6716,7 +6721,8 @@ if mode == "新規登録":
                                     st.success(f"✅ 楽曲別担当者DB連動: {linked_assign_created} 件")
                                 else:
                                     st.warning(f"⚠️ 楽曲別担当者DB連動: 成功 {linked_assign_created} 件 / 失敗 {linked_assign_failed} 件")
-                            show_post_register_ui()
+                            if success_count > 0:
+                                show_post_register_ui()
                     with col_clear:
                         if st.button("登録リストをクリア", key="cart_clear_score"):
                             st.session_state.reg_cart = []
@@ -6934,13 +6940,13 @@ if mode == "新規登録":
                         sel = st.selectbox("候補", options, key="score_perf_pick")
                         if sel != "（選択してください）":
                             picked = perf_matches[options.index(sel) - 1]
-                            if st.button("＋ 追加", key="score_perf_add"):
+                            if st.button("🎻 出演を追加", key="score_perf_add"):
                                 add_selected_perf(picked["id"], picked["title"])
                                 st.rerun()
                     elif perf_query:
                         st.caption("候補が見つかりませんでした。")
                     if perf_query:
-                        if st.button("＋ 新規作成して追加", key="score_perf_create"):
+                        if st.button("🆕 演奏会（出演）を新規登録して追加", key="score_perf_create"):
                             new_title = perf_query.strip()
                             if not new_title:
                                 st.warning("新規作成するタイトルを入力してください。")
@@ -7992,6 +7998,7 @@ if mode == "新規登録":
                 col_reg, col_clear = st.columns([2, 1])
                 with col_reg:
                     if st.button(f"📥 {len(st.session_state.reg_cart)} 件を一括登録", type="primary", key="bulk_register"):
+                        total_count = len(st.session_state.get("reg_cart", []))
                         if not st.session_state.pages_loaded:
                             with st.spinner("Notionデータ取得中..."):
                                 all_pages = load_notion_data()
@@ -8024,10 +8031,14 @@ if mode == "新規登録":
                                 success_count += 1
                             prog.progress((n + 1) / len(st.session_state.reg_cart))
                             time.sleep(0.3)
+                        fail_count = max(0, total_count - success_count)
                         for key in ["reg_cart", "new_search_results", "new_search_done",
                                     "bulk_checked", "album_tracks_cache", "album_tracks_id"]:
                             st.session_state.pop(key, None)
-                        st.success(f"✅ {success_count} 件登録完了！")
+                        if success_count > 0:
+                            st.success(f"✅ {success_count} 件登録完了" + (f"　❌ {fail_count} 件失敗" if fail_count else ""))
+                        else:
+                            st.error("❌ 登録できませんでした（0 件）")
                         reset_new_register_state()
                         if st.session_state.get("auto_reload_mode") == "partial":
                             for p in st.session_state.get("created_pages", []):
@@ -8035,7 +8046,8 @@ if mode == "新規登録":
                             st.session_state.created_pages = []
                         else:
                             sync_notion_after_update()
-                        show_post_register_ui()
+                        if success_count > 0:
+                            show_post_register_ui()
                 with col_clear:
                     if st.button("🗑 登録リストをクリア", key="cart_clear"):
                         st.session_state.reg_cart = []
@@ -8289,7 +8301,7 @@ if mode == "出演者管理":
             pn = c1.text_input("出演者名", key="cast_mode_name")
             pi = c2.text_input("担当楽器", key="cast_mode_inst")
             pm = c3.text_input("メモ", key="cast_mode_memo")
-            if c4.button("＋追加", key="cast_mode_add"):
+            if c4.button("👤 出演者を追加", key="cast_mode_add"):
                 if pn.strip():
                     nk = _normalize_person_name(pn)
                     dup = next((i for i, x in enumerate(st.session_state.cast_mode_participants) if _normalize_person_name(x.get("name", "")) == nk), None)
@@ -9450,7 +9462,7 @@ if mode == "データ管理":
                                 label = title_w + (f"　{w.get('disambiguation','')}" if w.get("disambiguation") else "")
                                 c_t, c_b = st.columns([5, 1.2])
                                 c_t.write(label)
-                                if c_b.button("＋追加", key=f"edit_rel_mb_add_{page_id}_{i}"):
+                                if c_b.button("🎼 曲を追加", key=f"edit_rel_mb_add_{page_id}_{i}"):
                                     st.session_state.focus_page_id = page_id
                                     creator_name = (selected_comp or {}).get("name", "")
                                     if add_or_create_score_relation(title_w, creator_name):
@@ -9482,7 +9494,7 @@ if mode == "データ管理":
                             artist_name = track.get("artistName", "")
                             c_t, c_b = st.columns([5, 1.2])
                             c_t.write(f"{track_name} — {artist_name}")
-                            if c_b.button("＋追加", key=f"edit_rel_it_add_{page_id}_{i}"):
+                            if c_b.button("🎵 曲を追加", key=f"edit_rel_it_add_{page_id}_{i}"):
                                 st.session_state.focus_page_id = page_id
                                 if add_or_create_score_relation(track_name, artist_name):
                                     st.session_state.pending_notice = f"✅ 関連を追加: {track_name}"
@@ -9498,7 +9510,7 @@ if mode == "データ管理":
                     sel = st.selectbox("候補", options, key=f"edit_rel_pick_{page_id}")
                     if sel != "（選択してください）":
                         picked = rel_matches[options.index(sel) - 1]
-                        if st.button("＋ 追加", key=f"edit_rel_add_{page_id}"):
+                        if st.button("🔗 関連先を追加", key=f"edit_rel_add_{page_id}"):
                             add_rel(picked["id"], picked["title"])
                             if persist_relations():
                                 sync_notion_after_update(page_id=page_id)
@@ -9509,7 +9521,7 @@ if mode == "データ管理":
                 elif rel_query:
                     st.caption("候補が見つかりませんでした。")
                 if rel_query:
-                    if st.button("＋ 新規作成して追加", key=f"edit_rel_create_{page_id}"):
+                    if st.button("🆕 新規登録して追加", key=f"edit_rel_create_{page_id}"):
                         new_title = rel_query.strip()
                         if not new_title:
                             st.warning("新規作成するタイトルを入力してください。")
