@@ -50,7 +50,7 @@ NOTION_HEADERS = {
 
 DEFAULT_TIMEOUT = 20
 REFRESH_BATCH_SIZE = 20
-APP_VERSION = "10.04"
+APP_VERSION = "10.05"
 GAME_JP_LEARNED_MAP_PATH = Path("data/game_jp_learned.json")
 WIKIMEDIA_HEADERS = {
     "User-Agent": "ArteMisCERS/9.x (metadata resolver; contact: app operator)",
@@ -98,6 +98,26 @@ def queue_action(flag_key: str) -> None:
 def drive_image_url(file_id: str) -> str:
     """Notion/ブラウザで扱いやすいDrive画像URLを返す。"""
     return f"https://drive.google.com/thumbnail?id={file_id}&sz=w2000"
+
+def format_premiere_source_message(source: str) -> str:
+    src = (source or "").strip()
+    if src == "musicbrainz-work":
+        return "MusicBrainz Workの初期日付を利用"
+    if src == "musicbrainz-relation":
+        return "MusicBrainz premiere relationを利用"
+    if src == "musicbrainz-recording":
+        return "MusicBrainz recording初出日を利用"
+    if src == "wikidata-qid":
+        return "Wikidata（作品QID）を利用"
+    if src == "wikidata-search":
+        return "Wikidata（検索解決）を利用"
+    if src == "work-id-empty":
+        return "作品IDが空のため未取得"
+    if src.startswith("mb-work-"):
+        return f"MusicBrainz作品取得エラー（{src.replace('mb-work-', '')}）"
+    if src == "exception":
+        return "初演情報取得処理で例外が発生"
+    return "参照先に初演情報が見つかりませんでした"
 
 def get_media_icon_url(media_label: str) -> str:
     normalized = MEDIA_LABEL_ALIASES.get(media_label, media_label)
@@ -6059,12 +6079,13 @@ if mode == "新規登録":
                         with st.expander(f"{idx+1}. {item['jp_title']}", expanded=True):
                             if item.get("media_type") == "score":
                                 st.caption(f"関連出演履歴: {len(_clean_relation_ids(item.get('relation_ids')))} 件")
+                                src = item.get("premiere_source", "")
                                 if item.get("premiere_missing"):
                                     st.caption("ℹ️ 初演情報を確認できなかったため、リリース日は空欄です（必要なら手入力してください）")
+                                    st.caption(f"ℹ️ 取得状況: {format_premiere_source_message(src)}")
                                 else:
-                                    src = item.get("premiere_source", "")
                                     if src:
-                                        st.caption(f"ℹ️ 初演情報ソース: {src}")
+                                        st.caption(f"ℹ️ 初演情報ソース: {format_premiere_source_message(src)}")
                             cols = st.columns([2, 1, 2, 2, 1, 1])
                             item["jp_title"] = cols[0].text_input("日本語タイトル", value=item["jp_title"], key=f"cart_jp_{item_uid}")
                             item["release"]  = cols[1].text_input("リリース日", value=item.get("release", ""), key=f"cart_rel_{item_uid}")
